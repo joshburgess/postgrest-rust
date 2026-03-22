@@ -382,6 +382,61 @@ CREATE FUNCTION api.multiply(a numeric, b numeric)
 -- Grant permissions on new tables
 -- ==========================================================================
 
+-- ==========================================================================
+-- Tables for more mutation/query patterns
+-- ==========================================================================
+
+CREATE TABLE api.orders (
+    id         serial PRIMARY KEY,
+    customer   text NOT NULL,
+    amount     numeric(10,2) NOT NULL,
+    status     text NOT NULL DEFAULT 'pending',
+    notes      text,
+    created_at timestamptz DEFAULT now()
+);
+
+INSERT INTO api.orders (customer, amount, status, notes) VALUES
+    ('Alice', 100.00, 'completed', 'First order'),
+    ('Bob', 250.50, 'pending', NULL),
+    ('Alice', 75.00, 'shipped', 'Express'),
+    ('Carol', 300.00, 'pending', 'Bulk order'),
+    ('Dave', 50.00, 'completed', NULL);
+
+CREATE TABLE api.logs (
+    id        serial PRIMARY KEY,
+    level     text NOT NULL DEFAULT 'info',
+    message   text NOT NULL,
+    context   jsonb DEFAULT '{}'
+);
+
+INSERT INTO api.logs (level, message, context) VALUES
+    ('info', 'Server started', '{"port": 3000}'),
+    ('warn', 'High memory', '{"usage": 95}'),
+    ('error', 'Connection failed', '{"host": "db"}'),
+    ('info', 'Request received', '{"method": "GET"}'),
+    ('debug', 'Cache hit', '{"key": "users"}');
+
+-- More functions
+CREATE FUNCTION api.count_by_status(s text)
+    RETURNS bigint LANGUAGE sql STABLE
+    AS $$ SELECT count(*) FROM api.orders WHERE status = s $$;
+
+CREATE FUNCTION api.customer_orders(cust text)
+    RETURNS SETOF api.orders LANGUAGE sql STABLE
+    AS $$ SELECT * FROM api.orders WHERE customer = cust ORDER BY id $$;
+
+CREATE FUNCTION api.concat_strings(a text, b text, sep text DEFAULT ' ')
+    RETURNS text LANGUAGE sql IMMUTABLE
+    AS $$ SELECT a || sep || b $$;
+
+CREATE FUNCTION api.clamp(val integer, lo integer, hi integer)
+    RETURNS integer LANGUAGE sql IMMUTABLE
+    AS $$ SELECT GREATEST(lo, LEAST(hi, val)) $$;
+
+CREATE FUNCTION api.sum_amounts(min_amount numeric DEFAULT 0)
+    RETURNS numeric LANGUAGE sql STABLE
+    AS $$ SELECT COALESCE(sum(amount), 0) FROM api.orders WHERE amount >= min_amount $$;
+
 GRANT SELECT ON ALL TABLES IN SCHEMA api TO web_anon;
 GRANT ALL ON ALL TABLES IN SCHEMA api TO test_user;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA api TO test_user;

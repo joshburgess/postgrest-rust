@@ -226,6 +226,64 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         mut_skip("insert settings verify", "POST", "/settings",
             Some(json!({"key": "compat_verify", "value": "check"})), jwt, vec![repr.clone()]),
 
+        // ==== Orders table mutations ====
+        mut_skip("insert order basic", "POST", "/orders",
+            Some(json!({"customer": "compat-cust", "amount": 42.00})), jwt, vec![repr.clone()]),
+        mut_skip("insert order with status", "POST", "/orders",
+            Some(json!({"customer": "compat-cust", "amount": 100.00, "status": "shipped", "notes": "fast"})),
+            jwt, vec![repr.clone()]),
+        mut_skip("insert order minimal", "POST", "/orders",
+            Some(json!({"customer": "compat-min", "amount": 0.01})), jwt, vec![minimal.clone()]),
+        mut_skip("insert orders multi", "POST", "/orders",
+            Some(json!([
+                {"customer": "compat-batch", "amount": 10.00},
+                {"customer": "compat-batch", "amount": 20.00},
+                {"customer": "compat-batch", "amount": 30.00}
+            ])), jwt, vec![repr.clone()]),
+        mut_skip("update orders by customer", "PATCH", "/orders?customer=eq.compat-batch",
+            Some(json!({"status": "completed"})), jwt, vec![repr.clone()]),
+        mut_skip("update orders notes", "PATCH", "/orders?customer=eq.compat-cust&amount=eq.42",
+            Some(json!({"notes": "updated note"})), jwt, vec![repr.clone()]),
+
+        // ==== Logs table mutations ====
+        mut_skip("insert log", "POST", "/logs",
+            Some(json!({"level": "info", "message": "compat test", "context": {"test": true}})),
+            jwt, vec![repr.clone()]),
+        mut_skip("insert log minimal", "POST", "/logs",
+            Some(json!({"message": "compat minimal"})), jwt, vec![repr.clone()]),
+        mut_skip("insert logs multi", "POST", "/logs",
+            Some(json!([
+                {"level": "warn", "message": "compat-w1"},
+                {"level": "error", "message": "compat-e1"},
+                {"level": "debug", "message": "compat-d1"}
+            ])), jwt, vec![repr.clone()]),
+        mut_skip("update logs level", "PATCH", "/logs?message=like.compat*&level=eq.warn",
+            Some(json!({"level": "info"})), jwt, vec![repr.clone()]),
+        mut_skip("delete logs compat", "DELETE", "/logs?message=like.compat*",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== More update patterns ====
+        mut_skip("update items set metadata obj", "PATCH", "/items?name=like.compat-at*",
+            Some(json!({"metadata": {"updated": true, "color": "red"}})), jwt, vec![repr.clone()]),
+        mut_skip("update profiles score to zero", "PATCH", "/profiles?username=eq.compat-user",
+            Some(json!({"score": 0})), jwt, vec![repr.clone()]),
+        mut_skip("update items quantity batch", "PATCH", "/items?name=like.compat-3*",
+            Some(json!({"quantity": 0, "active": false})), jwt, vec![repr.clone()]),
+
+        // ==== Delete with complex filters ====
+        mut_skip("delete orders by status", "DELETE", "/orders?status=eq.completed&customer=like.compat*",
+            None, jwt, vec![repr.clone()]),
+        mut_skip("delete orders remaining", "DELETE", "/orders?customer=like.compat*",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== Upsert on upsert_test ====
+        mut_skip("upsert upsert_test new", "POST", "/upsert_test?on_conflict=code",
+            Some(json!({"code": "COMPAT1", "value": "new"})), jwt, vec![merge.clone()]),
+        mut_skip("upsert upsert_test update", "POST", "/upsert_test?on_conflict=code",
+            Some(json!({"code": "COMPAT1", "value": "updated"})), jwt, vec![merge.clone()]),
+        mut_skip("upsert upsert_test ignore", "POST", "/upsert_test?on_conflict=code",
+            Some(json!({"code": "COMPAT1", "value": "ignored"})), jwt, vec![ignore.clone()]),
+
         // Cleanup remaining compat data
         mut_skip("cleanup items", "DELETE", "/items?name=like.compat*",
             None, jwt, vec![minimal.clone()]),
@@ -244,6 +302,12 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         mut_skip("cleanup employees", "DELETE", "/employees?name=like.compat*",
             None, jwt, vec![minimal.clone()]),
         mut_skip("cleanup entities", "DELETE", "/entities?name=like.compat*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup orders", "DELETE", "/orders?customer=like.compat*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup logs", "DELETE", "/logs?message=like.compat*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup upsert_test compat1", "DELETE", "/upsert_test?code=eq.COMPAT1",
             None, jwt, vec![minimal.clone()]),
     ]
 }

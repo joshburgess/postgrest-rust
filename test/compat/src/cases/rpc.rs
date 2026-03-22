@@ -169,5 +169,41 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         // ==== get_items_by_price variations ====
         post_json("rpc/get_items_by_price 5", "/rpc/get_items_by_price", json!({"min_price": 5}), jwt),
         g("/rpc/get_items_by_price?min_price=20&select=name,price", jwt),
+
+        // ==== count_by_status ====
+        post_json("rpc/count_by_status completed", "/rpc/count_by_status", json!({"s": "completed"}), jwt),
+        post_json("rpc/count_by_status pending", "/rpc/count_by_status", json!({"s": "pending"}), jwt),
+        post_json("rpc/count_by_status shipped", "/rpc/count_by_status", json!({"s": "shipped"}), jwt),
+        post_json("rpc/count_by_status none", "/rpc/count_by_status", json!({"s": "nonexistent"}), jwt),
+        g("/rpc/count_by_status?s=completed", jwt),
+
+        // ==== customer_orders ====
+        post_json("rpc/customer_orders Alice", "/rpc/customer_orders", json!({"cust": "Alice"}), jwt),
+        post_json("rpc/customer_orders Bob", "/rpc/customer_orders", json!({"cust": "Bob"}), jwt),
+        post_json("rpc/customer_orders nobody", "/rpc/customer_orders", json!({"cust": "Nobody"}), jwt),
+        g("/rpc/customer_orders?cust=Alice&select=customer,amount&order=amount.asc", jwt),
+        g("/rpc/customer_orders?cust=Carol", jwt),
+
+        // ==== concat_strings ====
+        post_json("rpc/concat_strings basic", "/rpc/concat_strings", json!({"a": "hello", "b": "world"}), jwt),
+        post_json("rpc/concat_strings sep", "/rpc/concat_strings", json!({"a": "foo", "b": "bar", "sep": "-"}), jwt),
+        post_json("rpc/concat_strings default sep", "/rpc/concat_strings", json!({"a": "x", "b": "y"}), jwt),
+        g("/rpc/concat_strings?a=left&b=right", jwt),
+        g("/rpc/concat_strings?a=a&b=b&sep=_", jwt),
+
+        // ==== clamp ====
+        post_json("rpc/clamp in range", "/rpc/clamp", json!({"val": 5, "lo": 1, "hi": 10}), jwt),
+        post_json("rpc/clamp below", "/rpc/clamp", json!({"val": -5, "lo": 0, "hi": 100}), jwt),
+        post_json("rpc/clamp above", "/rpc/clamp", json!({"val": 999, "lo": 0, "hi": 100}), jwt),
+        post_json("rpc/clamp edge", "/rpc/clamp", json!({"val": 10, "lo": 10, "hi": 10}), jwt),
+        g("/rpc/clamp?val=50&lo=0&hi=100", jwt),
+        g("/rpc/clamp?val=-1&lo=0&hi=10", jwt),
+
+        // ==== sum_amounts ====
+        post_json("rpc/sum_amounts default", "/rpc/sum_amounts", json!({}), jwt),
+        post_json("rpc/sum_amounts min100", "/rpc/sum_amounts", json!({"min_amount": 100}), jwt),
+        post_json("rpc/sum_amounts min1000", "/rpc/sum_amounts", json!({"min_amount": 1000}), jwt),
+        g("/rpc/sum_amounts?min_amount=200", jwt),
+        g("/rpc/sum_amounts", jwt),
     ]
 }

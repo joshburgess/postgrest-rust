@@ -442,6 +442,82 @@ pub fn cases(jwt_anon: &str, jwt_user: &str) -> Vec<TestCase> {
         g("/employees?manager_id=eq.2&order=id.asc", jwt_anon),
         g("/employees?or=(manager_id.eq.1,manager_id.is.null)&order=id.asc", jwt_anon),
         g("/employees?select=name&manager_id=not.is.null&order=name.asc", jwt_anon),
+
+        // ==== Orders table queries ====
+        g("/orders?order=id.asc", jwt_anon),
+        g("/orders?select=customer,amount&order=amount.desc", jwt_anon),
+        g("/orders?status=eq.completed&order=id.asc", jwt_anon),
+        g("/orders?status=eq.pending&order=amount.asc", jwt_anon),
+        g("/orders?customer=eq.Alice&order=id.asc", jwt_anon),
+        g("/orders?amount=gt.100&order=id.asc", jwt_anon),
+        g("/orders?notes=is.null&order=id.asc", jwt_anon),
+        g("/orders?notes=not.is.null&order=id.asc", jwt_anon),
+        g("/orders?or=(status.eq.completed,amount.gt.200)&order=id.asc", jwt_anon),
+        g("/orders?status=in.(completed,shipped)&order=id.asc", jwt_anon),
+        g("/orders?customer=neq.Alice&order=id.asc", jwt_anon),
+
+        // ==== Logs table queries ====
+        g("/logs?order=id.asc", jwt_anon),
+        g("/logs?level=eq.info&order=id.asc", jwt_anon),
+        g("/logs?level=eq.error&order=id.asc", jwt_anon),
+        g("/logs?level=in.(warn,error)&order=id.asc", jwt_anon),
+        g("/logs?select=level,message&order=id.asc", jwt_anon),
+        g("/logs?message=like.*started*&order=id.asc", jwt_anon),
+        g("/logs?context=cs.{\"port\":3000}&order=id.asc", jwt_anon),
+        g("/logs?select=message,context->port&order=id.asc", jwt_anon),
+        g("/logs?select=message,context->>host&order=id.asc", jwt_anon),
+
+        // ==== Orders: count ====
+        {
+            let mut tc = g("/orders?order=id.asc", jwt_anon);
+            tc.name = "count orders";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/orders?status=eq.pending&order=id.asc", jwt_anon);
+            tc.name = "count orders pending";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+
+        // ==== Logs: count ====
+        {
+            let mut tc = g("/logs?order=id.asc", jwt_anon);
+            tc.name = "count logs";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+
+        // ==== Orders: singular ====
+        {
+            let mut tc = g("/orders?id=eq.1", jwt_anon);
+            tc.name = "singular order";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== Logs: singular ====
+        {
+            let mut tc = g("/logs?id=eq.1", jwt_anon);
+            tc.name = "singular log";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== Orders: CSV ====
+        {
+            let mut tc = g("/orders?select=customer,amount,status&order=id.asc", jwt_anon);
+            tc.name = "CSV orders";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+
+        // ==== Orders: pagination ====
+        g("/orders?order=id.asc&limit=2", jwt_anon),
+        g("/orders?order=id.asc&limit=2&offset=2", jwt_anon),
+        g("/orders?order=amount.desc&limit=3", jwt_anon),
     ]
 }
 
