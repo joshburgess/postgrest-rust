@@ -269,6 +269,41 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/tasks?created_by=eq.1&order=id.asc", jwt),
         g("/tasks?select=title,project_id,assigned_to&order=id.asc", jwt),
 
+        // ==== More filter type permutations ====
+        g("/types_test?float_col=eq.1.5", jwt),
+        g("/types_test?float_col=neq.1.5&order=id.asc", jwt),
+        g("/types_test?float_col=gt.2&order=id.asc", jwt),
+        g("/types_test?double_col=lte.3&order=id.asc", jwt),
+        g("/types_test?numeric_col=gt.15&order=id.asc", jwt),
+        g("/types_test?time_col=eq.12:00:00", jwt),
+        g("/types_test?time_col=gt.15:00:00&order=id.asc", jwt),
+        g("/items?quantity=gte.100&order=id.asc", jwt),
+        g("/items?quantity=eq.0&order=id.asc", jwt),
+        g("/items?quantity=not.eq.0&order=id.asc", jwt),
+
+        // ==== Select single column from various tables ====
+        g("/numbered?select=val&order=id.asc&limit=3", jwt),
+        g("/entities?select=name&order=id.asc", jwt),
+        g("/employees?select=name&order=name.asc", jwt),
+        g("/tasks?select=title&order=title.asc", jwt),
+        g("/projects?select=name&order=name.asc", jwt),
+
+        // ==== Filtering with not.in on various types ====
+        g("/numbered?val=not.in.(1,2,3,4,5,6,7,8,9,10)&order=val.asc&limit=5", jwt),
+        g("/settings?key=not.in.(theme)&order=key.asc", jwt),
+        g("/profiles?username=not.in.(alice,bob)&order=id.asc", jwt),
+
+        // ==== Multiple columns in select with ordering ====
+        g("/profiles?select=username,email,age&order=age.asc.nullslast", jwt),
+        g("/employees?select=id,name,manager_id&order=manager_id.asc.nullsfirst,name.asc", jwt),
+        g("/books?select=title,pages,published&order=published.asc.nullslast", jwt),
+
+        // ==== Filtering and selecting specific columns ====
+        g("/books?select=title&pages=gt.300&order=title.asc", jwt),
+        g("/authors?select=name&bio=not.is.null&order=name.asc", jwt),
+        g("/items?select=name,price&active=eq.true&order=price.desc", jwt),
+        g("/profiles?select=username,score&score=not.is.null&order=score.desc", jwt),
+
         // ==== 404 for nonexistent table ====
         g_status_only("GET /nonexistent (404)", "/nonexistent", jwt),
     ]

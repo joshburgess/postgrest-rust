@@ -86,5 +86,68 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Prefer", "count=exact".to_string()));
             tc
         },
+
+        // ==== More limit/offset combos ====
+        g("/books?order=id.asc&limit=2&offset=0", jwt),
+        g("/books?order=id.asc&limit=2&offset=2", jwt),
+        g("/books?order=id.asc&limit=10&offset=0", jwt),
+        g("/employees?order=id.asc&limit=3", jwt),
+        g("/employees?order=id.asc&limit=3&offset=3", jwt),
+        g("/profiles?order=id.asc&limit=2", jwt),
+        g("/profiles?order=id.asc&limit=2&offset=2", jwt),
+
+        // ==== Range on small tables ====
+        {
+            let mut tc = g("/books?order=id.asc", jwt);
+            tc.name = "Range books 0-1";
+            tc.headers.push(("Range", "0-1".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/employees?order=id.asc", jwt);
+            tc.name = "Range employees 0-2";
+            tc.headers.push(("Range", "0-2".to_string()));
+            tc
+        },
+
+        // ==== Count on more tables ====
+        {
+            let mut tc = g("/profiles?order=id.asc", jwt);
+            tc.name = "count profiles";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/tasks?order=id.asc", jwt);
+            tc.name = "count tasks";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/unicode_test?order=id.asc", jwt);
+            tc.name = "count unicode_test";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/compound_pk?order=k1.asc,k2.asc", jwt);
+            tc.name = "count compound_pk";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+
+        // ==== Count with limit (partial content 206) ====
+        {
+            let mut tc = g("/profiles?order=id.asc&limit=2", jwt);
+            tc.name = "count profiles partial";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/books?order=id.asc&limit=2", jwt);
+            tc.name = "count books partial";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
     ]
 }

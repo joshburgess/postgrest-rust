@@ -131,5 +131,43 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
             tc
         },
+
+        // ==== More multiply variations ====
+        post_json("rpc/multiply large", "/rpc/multiply", json!({"a": 999.99, "b": 1000}), jwt),
+        g("/rpc/multiply?a=0.5&b=0.5", jwt),
+        g("/rpc/multiply?a=1&b=1", jwt),
+
+        // ==== Active profiles with filter ====
+        g("/rpc/active_profiles?select=username&order=username.asc", jwt),
+        g("/rpc/active_profiles?min_score=0&select=username,score&order=score.desc", jwt),
+        post_json("rpc/active_profiles min0", "/rpc/active_profiles", json!({"min_score": 0}), jwt),
+
+        // ==== is_positive variations ====
+        g("/rpc/is_positive?n=1", jwt),
+        g("/rpc/is_positive?n=0", jwt),
+        g("/rpc/is_positive?n=-1", jwt),
+        post_json("rpc/is_positive 100", "/rpc/is_positive", json!({"n": 100}), jwt),
+        post_json("rpc/is_positive -100", "/rpc/is_positive", json!({"n": -100}), jwt),
+
+        // ==== echo boundary cases ====
+        post_json("rpc/echo single char", "/rpc/echo", json!({"value": "x"}), jwt),
+        post_json("rpc/echo with newline", "/rpc/echo", json!({"value": "line1\nline2"}), jwt),
+        g("/rpc/echo?value=abc", jwt),
+
+        // ==== greet boundary cases ====
+        post_json("rpc/greet empty name", "/rpc/greet", json!({"name": ""}), jwt),
+        post_json("rpc/greet long name", "/rpc/greet", json!({"name": "a very long name indeed"}), jwt),
+
+        // ==== get_author variations ====
+        post_json("rpc/get_author 3", "/rpc/get_author", json!({"author_id": 3}), jwt),
+
+        // ==== search_books variations ====
+        post_json("rpc/search_books Deep", "/rpc/search_books", json!({"query": "Deep"}), jwt),
+        post_json("rpc/search_books Basic", "/rpc/search_books", json!({"query": "Basic"}), jwt),
+        g("/rpc/search_books?query=Post&select=id,title&order=id.asc", jwt),
+
+        // ==== get_items_by_price variations ====
+        post_json("rpc/get_items_by_price 5", "/rpc/get_items_by_price", json!({"min_price": 5}), jwt),
+        g("/rpc/get_items_by_price?min_price=20&select=name,price", jwt),
     ]
 }

@@ -94,6 +94,49 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc
         },
 
+        // ==== More singular tests ====
+        {
+            let mut tc = g("/profiles?username=eq.bob", jwt);
+            tc.name = "singular profile";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/employees?id=eq.4", jwt);
+            tc.name = "singular employee 4";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/tasks?id=eq.1", jwt);
+            tc.name = "singular task";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== More CSV tests ====
+        {
+            let mut tc = g("/employees?order=id.asc", jwt);
+            tc.name = "CSV employees";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+        {
+            let mut tc = g("/profiles?order=id.asc", jwt);
+            tc.name = "CSV profiles";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+        {
+            let mut tc = g("/items?order=id.asc&select=name,price", jwt);
+            tc.name = "CSV items";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+
         // ==== Prefer: count variations ====
         {
             let mut tc = g("/authors?order=id.asc&id=in.(1,2,3)", jwt);
