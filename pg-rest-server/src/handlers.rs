@@ -277,7 +277,8 @@ async fn execute_with_role(
         return Ok(json);
     }
 
-    // Authenticated path: use transaction for SET LOCAL ROLE scoping.
+    // Authenticated path: transaction with pipelined setup.
+    // batch_execute sends SET ROLE + set_config in one round trip.
     let mut client = pool.get().await?;
     let txn = client.transaction().await?;
 
@@ -287,16 +288,16 @@ async fn execute_with_role(
         .unwrap_or(anon_role);
 
     let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
-    txn.batch_execute(&format!("SET LOCAL ROLE {quoted_role}"))
-        .await?;
-
-    if let Some(claims) = claims {
-        txn.execute(
-            "SELECT set_config('request.jwt.claims', $1, true)",
-            &[&claims.raw],
+    let setup = if let Some(claims) = claims {
+        let escaped = claims.raw.replace('\'', "''");
+        format!(
+            "SET LOCAL ROLE {quoted_role}; \
+             SELECT set_config('request.jwt.claims', '{escaped}', true)"
         )
-        .await?;
-    }
+    } else {
+        format!("SET LOCAL ROLE {quoted_role}")
+    };
+    txn.batch_execute(&setup).await?;
 
     let rows = txn.query(&sql.sql, &param_refs).await?;
     txn.commit().await?;
@@ -355,7 +356,7 @@ async fn execute_with_count(
         return Ok((json, total));
     }
 
-    // Authenticated path: use transaction for SET LOCAL ROLE scoping.
+    // Authenticated path: transaction with pipelined setup.
     let mut client = pool.get().await?;
     let txn = client.transaction().await?;
 
@@ -365,16 +366,16 @@ async fn execute_with_count(
         .unwrap_or(anon_role);
 
     let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
-    txn.batch_execute(&format!("SET LOCAL ROLE {quoted_role}"))
-        .await?;
-
-    if let Some(claims) = claims {
-        txn.execute(
-            "SELECT set_config('request.jwt.claims', $1, true)",
-            &[&claims.raw],
+    let setup = if let Some(claims) = claims {
+        let escaped = claims.raw.replace('\'', "''");
+        format!(
+            "SET LOCAL ROLE {quoted_role}; \
+             SELECT set_config('request.jwt.claims', '{escaped}', true)"
         )
-        .await?;
-    }
+    } else {
+        format!("SET LOCAL ROLE {quoted_role}")
+    };
+    txn.batch_execute(&setup).await?;
 
     let rows = txn.query(&sql.sql, &param_refs).await?;
     let json: Option<String> = rows
