@@ -690,6 +690,7 @@ impl<'a> SqlBuilder<'a> {
             let dummy_table = Table {
                 name: req.function.clone(),
                 columns: Vec::new(),
+                column_index: std::collections::HashMap::new(),
                 primary_key: Vec::new(),
                 is_view: false,
                 insertable: false,
@@ -1112,6 +1113,8 @@ mod tests {
                         enum_values: None,
                     },
                 ],
+                column_index: [("id".to_string(), 0), ("name".to_string(), 1), ("age".to_string(), 2)]
+                    .into_iter().collect(),
                 primary_key: vec!["id".into()],
                 is_view: false,
                 insertable: true,

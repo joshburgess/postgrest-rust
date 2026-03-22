@@ -20,6 +20,8 @@ fn test_cache() -> SchemaCache {
                 col("value", "int4", true, false, false),
                 col("note", "text", true, false, false),
             ],
+            column_index: [("id".into(), 0), ("name".into(), 1), ("value".into(), 2), ("note".into(), 3)]
+                .into_iter().collect(),
             primary_key: vec!["id".into()],
             is_view: false,
             insertable: true,

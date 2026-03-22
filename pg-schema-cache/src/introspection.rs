@@ -188,7 +188,10 @@ pub(crate) async fn build(
 
     let table_map: HashMap<QualifiedName, Table> = tables
         .into_iter()
-        .map(|t| (t.name.clone(), t))
+        .map(|mut t| {
+            t.rebuild_column_index();
+            (t.name.clone(), t)
+        })
         .collect();
 
     let relationships = build_relationships(&raw_fks, &table_map);
@@ -221,6 +224,7 @@ async fn load_tables(
                 row.get::<_, String>("table_name"),
             ),
             columns: Vec::new(),
+            column_index: HashMap::new(),
             primary_key: Vec::new(),
             is_view,
             insertable,

@@ -251,6 +251,38 @@ fn wants_explain(headers: &HeaderMap) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline protocol: send everything in 1 round trip
+// ---------------------------------------------------------------------------
+
+/// Inline bind parameters into the SQL string for use with simple_query.
+/// Replaces $1, $2, etc. with properly escaped literal values.
+fn inline_params(sql: &str, params: &[String]) -> String {
+    let mut result = sql.to_string();
+    // Replace in reverse order so $10 doesn't match $1 first.
+    for (i, param) in params.iter().enumerate().rev() {
+        let placeholder = format!("${}", i + 1);
+        let escaped = format!("'{}'", param.replace('\'', "''"));
+        result = result.replace(&placeholder, &escaped);
+    }
+    result
+}
+
+/// Extract the text result from simple_query response messages.
+/// Scans for the last Row message which contains our JSON result.
+fn extract_simple_query_result(
+    msgs: &[tokio_postgres::SimpleQueryMessage],
+) -> Option<String> {
+    // The data query result is the last Row in the response.
+    // Walk backwards to find it (skipping CommandComplete messages from COMMIT etc.).
+    for msg in msgs.iter().rev() {
+        if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+            return row.get(0).map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Execute helper
 // ---------------------------------------------------------------------------
 
@@ -260,16 +292,14 @@ async fn execute_with_role(
     anon_role: &str,
     sql: &SqlOutput,
 ) -> Result<Option<String>, ApiError> {
-    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
-        .params
-        .iter()
-        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-        .collect();
-
-    // Fast path: anon requests (no JWT) skip the transaction + SET LOCAL ROLE.
-    // The connection pool's default role is used directly — 1 round trip instead of 4.
+    // Fast path: anon requests — 1 round trip, no role switch.
     if claims.is_none() {
         let client = pool.get().await?;
+        let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
+            .params
+            .iter()
+            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+            .collect();
         let rows = client.query(&sql.sql, &param_refs).await?;
         let json: Option<String> = rows
             .first()
@@ -277,36 +307,42 @@ async fn execute_with_role(
         return Ok(json);
     }
 
-    // Authenticated path: transaction with pipelined setup.
-    // batch_execute sends SET ROLE + set_config in one round trip.
-    let mut client = pool.get().await?;
-    let txn = client.transaction().await?;
-
-    let role = claims
-        .as_ref()
-        .map(|c| c.role.as_str())
-        .unwrap_or(anon_role);
-
+    // Authenticated path: pipeline everything into 1 simple_query call.
+    // BEGIN + SET LOCAL ROLE + set_config + data query + COMMIT = 1 round trip.
+    let client = pool.get().await?;
+    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or(anon_role);
     let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
-    let setup = if let Some(claims) = claims {
-        let escaped = claims.raw.replace('\'', "''");
+    let inlined_query = inline_params(&sql.sql, &sql.params);
+
+    let pipeline_sql = if let Some(claims) = claims {
+        let escaped_claims = claims.raw.replace('\'', "''");
         format!(
-            "SET LOCAL ROLE {quoted_role}; \
-             SELECT set_config('request.jwt.claims', '{escaped}', true)"
+            "BEGIN; \
+             SET LOCAL ROLE {quoted_role}; \
+             SELECT set_config('request.jwt.claims', '{escaped_claims}', true); \
+             {inlined_query}; \
+             COMMIT"
         )
     } else {
-        format!("SET LOCAL ROLE {quoted_role}")
+        format!(
+            "BEGIN; \
+             SET LOCAL ROLE {quoted_role}; \
+             {inlined_query}; \
+             COMMIT"
+        )
     };
-    txn.batch_execute(&setup).await?;
 
-    let rows = txn.query(&sql.sql, &param_refs).await?;
-    txn.commit().await?;
-
-    let json: Option<String> = rows
-        .first()
-        .and_then(|r| r.try_get::<_, String>(0).ok());
-
-    Ok(json)
+    match client.simple_query(&pipeline_sql).await {
+        Ok(msgs) => {
+            let json = extract_simple_query_result(&msgs);
+            Ok(json)
+        }
+        Err(e) => {
+            // Clean up the aborted transaction so the connection is reusable.
+            let _ = client.simple_query("ROLLBACK").await;
+            Err(ApiError::Database(e))
+        }
+    }
 }
 
 /// Execute a data query and an optional count query.
@@ -319,82 +355,106 @@ async fn execute_with_count(
     sql: &SqlOutput,
     count_sql: Option<&SqlOutput>,
 ) -> Result<(Option<String>, Option<i64>), ApiError> {
-    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
-        .params
-        .iter()
-        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-        .collect();
-
-    // Fast path: anon reads without count — 1 round trip, no transaction.
+    // Fast path: anon reads without count — 1 round trip via simple_query.
     if claims.is_none() && count_sql.is_none() {
         let client = pool.get().await?;
-        let rows = client.query(&sql.sql, &param_refs).await?;
-        let json: Option<String> = rows
-            .first()
-            .and_then(|r| r.try_get::<_, String>(0).ok());
+        let inlined = inline_params(&sql.sql, &sql.params);
+        let msgs = client.simple_query(&inlined).await?;
+        let json = extract_simple_query_result(&msgs);
         return Ok((json, None));
     }
 
-    // Anon with count — 2 round trips (data + count), no transaction needed.
+    // Anon with count — pipeline data + count in one simple_query.
     if claims.is_none() {
         let client = pool.get().await?;
-        let rows = client.query(&sql.sql, &param_refs).await?;
-        let json: Option<String> = rows
-            .first()
-            .and_then(|r| r.try_get::<_, String>(0).ok());
-        let total = if let Some(csql) = count_sql {
-            let cp: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = csql
-                .params
-                .iter()
-                .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-                .collect();
-            let crow = client.query_one(&csql.sql, &cp).await?;
-            Some(crow.get::<_, i64>(0))
+        let inlined = inline_params(&sql.sql, &sql.params);
+        let pipeline = if let Some(csql) = count_sql {
+            let inlined_count = inline_params(&csql.sql, &csql.params);
+            format!("{inlined}; {inlined_count}")
+        } else {
+            inlined
+        };
+        let msgs = client.simple_query(&pipeline).await.map_err(|e| {
+            // No transaction to rollback for anon path.
+            ApiError::Database(e)
+        })?;
+
+        // Extract data (first Row) and count (second Row if present).
+        let mut rows_iter = msgs.iter().filter_map(|m| {
+            if let tokio_postgres::SimpleQueryMessage::Row(r) = m {
+                Some(r)
+            } else {
+                None
+            }
+        });
+        let json = rows_iter.next().and_then(|r| r.get(0).map(|s| s.to_string()));
+        let total = if count_sql.is_some() {
+            rows_iter.next().and_then(|r| r.get(0).and_then(|s| s.parse::<i64>().ok()))
         } else {
             None
         };
         return Ok((json, total));
     }
 
-    // Authenticated path: transaction with pipelined setup.
-    let mut client = pool.get().await?;
-    let txn = client.transaction().await?;
-
-    let role = claims
-        .as_ref()
-        .map(|c| c.role.as_str())
-        .unwrap_or(anon_role);
-
+    // Authenticated path: pipeline BEGIN + SET ROLE + set_config + query [+ count] + COMMIT.
+    // All in 1 simple_query call = 1 TCP round trip.
+    let client = pool.get().await?;
+    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or(anon_role);
     let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
-    let setup = if let Some(claims) = claims {
-        let escaped = claims.raw.replace('\'', "''");
+    let inlined_query = inline_params(&sql.sql, &sql.params);
+
+    let mut pipeline = if let Some(claims) = claims {
+        let escaped_claims = claims.raw.replace('\'', "''");
         format!(
-            "SET LOCAL ROLE {quoted_role}; \
-             SELECT set_config('request.jwt.claims', '{escaped}', true)"
+            "BEGIN; \
+             SET LOCAL ROLE {quoted_role}; \
+             SELECT set_config('request.jwt.claims', '{escaped_claims}', true); \
+             {inlined_query}"
         )
     } else {
-        format!("SET LOCAL ROLE {quoted_role}")
+        format!(
+            "BEGIN; \
+             SET LOCAL ROLE {quoted_role}; \
+             {inlined_query}"
+        )
     };
-    txn.batch_execute(&setup).await?;
 
-    let rows = txn.query(&sql.sql, &param_refs).await?;
-    let json: Option<String> = rows
-        .first()
-        .and_then(|r| r.try_get::<_, String>(0).ok());
+    if let Some(csql) = count_sql {
+        let inlined_count = inline_params(&csql.sql, &csql.params);
+        pipeline.push_str("; ");
+        pipeline.push_str(&inlined_count);
+    }
+    pipeline.push_str("; COMMIT");
 
-    let total = if let Some(csql) = count_sql {
-        let cp: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = csql
-            .params
-            .iter()
-            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-            .collect();
-        let crow = txn.query_one(&csql.sql, &cp).await?;
-        Some(crow.get::<_, i64>(0))
+    let msgs = match client.simple_query(&pipeline).await {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = client.simple_query("ROLLBACK").await;
+            return Err(ApiError::Database(e));
+        }
+    };
+
+    // Extract results: data query row, then optional count row.
+    let mut rows_iter = msgs.iter().filter_map(|m| {
+        if let tokio_postgres::SimpleQueryMessage::Row(r) = m {
+            Some(r)
+        } else {
+            None
+        }
+    });
+
+    // Skip the set_config result row (if JWT claims were set).
+    if claims.is_some() {
+        rows_iter.next(); // set_config returns a row
+    }
+
+    let json = rows_iter.next().and_then(|r| r.get(0).map(|s| s.to_string()));
+    let total = if count_sql.is_some() {
+        rows_iter.next().and_then(|r| r.get(0).and_then(|s| s.parse::<i64>().ok()))
     } else {
         None
     };
 
-    txn.commit().await?;
     Ok((json, total))
 }
 

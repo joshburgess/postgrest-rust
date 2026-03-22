@@ -72,6 +72,8 @@ impl SchemaCache {
 pub struct Table {
     pub name: QualifiedName,
     pub columns: Vec<Column>,
+    /// O(1) column lookup: name → index into `columns`.
+    pub column_index: HashMap<String, usize>,
     pub primary_key: Vec<String>,
     pub is_view: bool,
     pub insertable: bool,
@@ -82,7 +84,19 @@ pub struct Table {
 
 impl Table {
     pub fn get_column(&self, name: &str) -> Option<&Column> {
-        self.columns.iter().find(|c| c.name == name)
+        self.column_index
+            .get(name)
+            .and_then(|&idx| self.columns.get(idx))
+    }
+
+    /// Rebuild the column_index after modifying columns.
+    pub fn rebuild_column_index(&mut self) {
+        self.column_index = self
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.name.clone(), i))
+            .collect();
     }
 }
 
