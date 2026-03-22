@@ -129,6 +129,70 @@ fn extract_filters(params: &HashMap<String, String>) -> Result<FilterNode, ApiEr
     Ok(FilterNode::And(nodes))
 }
 
+/// Like extract_filters but works with Vec<(String,String)> to support duplicate keys.
+fn extract_filters_multi(params: &[(String, String)]) -> Result<FilterNode, ApiError> {
+    let mut nodes: Vec<FilterNode> = Vec::new();
+    for (key, value) in params {
+        match key.as_str() {
+            "or" | "and" => {
+                nodes.push(parse_logic_filter(key, value).map_err(ApiError::from)?);
+            }
+            k if RESERVED_PARAMS.contains(&k) => continue,
+            column => {
+                nodes.push(FilterNode::Condition(
+                    parse_filter(column, value).map_err(ApiError::from)?,
+                ));
+            }
+        }
+    }
+    Ok(FilterNode::And(nodes))
+}
+
+/// Parse raw query string into (key, value) pairs, preserving duplicates.
+fn parse_query_pairs(query: &str) -> Vec<(String, String)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    query
+        .split('&')
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            Some((
+                urlencoding_decode(k),
+                urlencoding_decode(v),
+            ))
+        })
+        .collect()
+}
+
+fn urlencoding_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        match b {
+            b'%' => {
+                let hi = chars.next().and_then(hex_val);
+                let lo = chars.next().and_then(hex_val);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    result.push((h << 4 | l) as char);
+                }
+            }
+            b'+' => result.push(' '),
+            _ => result.push(b as char),
+        }
+    }
+    result
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Parse `Accept-Profile` (reads) or `Content-Profile` (writes) header
 /// to select a specific schema.
 fn resolve_schemas<'a>(
@@ -298,9 +362,10 @@ async fn execute_with_count(
 pub async fn handle_read(
     State(state): State<Arc<AppState>>,
     Path(table): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let params = parse_query_pairs(raw_query.as_deref().unwrap_or(""));
     let claims = extract_jwt_claims(&headers, &state)?;
     let cache: Arc<SchemaCache> = state.schema_cache.borrow().clone();
     let schemas = resolve_schemas(&headers, &state.config.database.schemas)?;
@@ -311,21 +376,23 @@ pub async fn handle_read(
     let table_qn = table_meta.name.clone();
 
     let select = parse_select(
-        params.get("select").map(String::as_str).unwrap_or("*"),
+        params.iter().find(|(k,_)| k == "select").map(|(_,v)| v.as_str()).unwrap_or("*"),
     )?;
-    let order = parse_order(
-        params.get("order").map(String::as_str).unwrap_or(""),
-    )?;
-    let filters = extract_filters(&params)?;
+    // Combine multiple order params
+    let order_str: String = params.iter()
+        .filter(|(k,_)| k == "order")
+        .map(|(_,v)| v.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let order = parse_order(&order_str)?;
+    let filters = extract_filters_multi(&params)?;
 
     let (range_limit, range_offset) = parse_range(&headers);
-    let limit = params
-        .get("limit")
-        .and_then(|l| l.parse().ok())
+    let limit = params.iter().find(|(k,_)| k == "limit")
+        .and_then(|(_,v)| v.parse().ok())
         .or(range_limit);
-    let offset = params
-        .get("offset")
-        .and_then(|o| o.parse().ok())
+    let offset = params.iter().find(|(k,_)| k == "offset")
+        .and_then(|(_,v)| v.parse().ok())
         .or(range_offset);
 
     let prefs = parse_prefer(&headers);
@@ -433,8 +500,16 @@ pub async fn handle_read(
         ("application/json", body)
     };
 
+    // PostgREST returns 206 Partial Content when the result is a subset of the total.
+    let row_count = count_json_array(&response_body);
+    let status = if let Some(total) = total {
+        if row_count < total as usize { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK }
+    } else {
+        StatusCode::OK
+    };
+
     Ok((
-        StatusCode::OK,
+        status,
         [
             (header::CONTENT_TYPE.as_str(), content_type),
             ("content-range", &content_range),
@@ -723,6 +798,11 @@ pub async fn handle_rpc(
         &sql,
     )
     .await?;
+
+    // Void functions return 204 No Content (PostgREST compat).
+    if matches!(func.return_type, ReturnType::Void) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
 
     Ok((
         StatusCode::OK,

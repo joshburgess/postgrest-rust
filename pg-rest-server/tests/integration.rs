@@ -289,9 +289,9 @@ async fn test_read_count_exact_content_range() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // 206 Partial Content because 2 of 3 rows returned (PostgREST compat).
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
     let range = resp.headers().get("content-range").unwrap().to_str().unwrap();
-    // 3 seed authors with id in (1,2,3), requesting first 2: "0-1/3"
     assert_eq!(range, "0-1/3");
 }
 

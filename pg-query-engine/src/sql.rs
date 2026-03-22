@@ -157,10 +157,12 @@ impl<'a> SqlBuilder<'a> {
                     cast,
                 } => {
                     let op = if *as_text { "->>" } else { "->" };
-                    let expr = format!("{}{op}'{}'", quote_ident(column), path.replace('\'', "''"));
+                    let escaped_path = path.replace('\'', "''");
+                    let alias = quote_ident(path);
+                    let expr = format!("{}{op}'{escaped_path}'", quote_ident(column));
                     match cast {
-                        Some(t) => parts.push(format!("({expr})::{t}")),
-                        None => parts.push(expr),
+                        Some(t) => parts.push(format!("({expr})::{t} AS {alias}")),
+                        None => parts.push(format!("{expr} AS {alias}")),
                     }
                 }
                 SelectItem::Star => {
@@ -666,10 +668,12 @@ impl<'a> SqlBuilder<'a> {
                         }
                         SelectItem::JsonAccess { column, path, as_text, cast } => {
                             let op = if *as_text { "->>" } else { "->" };
-                            let expr = format!("{}{op}'{}'", quote_ident(column), path.replace('\'', "''"));
+                            let escaped = path.replace('\'', "''");
+                            let alias = quote_ident(path);
+                            let expr = format!("{}{op}'{escaped}'", quote_ident(column));
                             Some(match cast {
-                                Some(t) => format!("({expr})::{t}"),
-                                None => expr,
+                                Some(t) => format!("({expr})::{t} AS {alias}"),
+                                None => format!("{expr} AS {alias}"),
                             })
                         }
                         SelectItem::Star => Some("*".to_string()),

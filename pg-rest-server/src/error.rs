@@ -56,7 +56,7 @@ impl IntoResponse for ApiError {
             Self::Database(e) => {
                 let code = e.code();
                 let status = match code.map(|c| c.code()) {
-                    Some("42501") => StatusCode::FORBIDDEN,            // insufficient privilege
+                    Some("42501") => StatusCode::UNAUTHORIZED,         // insufficient privilege (PostgREST compat)
                     Some("23505") => StatusCode::CONFLICT,             // unique violation
                     Some("23503") => StatusCode::CONFLICT,             // FK violation
                     Some("23502") => StatusCode::BAD_REQUEST,          // not null violation
