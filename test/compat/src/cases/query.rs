@@ -223,6 +223,52 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/compound_pk?k2=eq.1&order=k1.asc", jwt),
         g("/compound_pk?k1=eq.1&k2=eq.2", jwt),
 
+        // ==== Profiles table (many nullable columns) ====
+        g("/profiles?order=id.asc", jwt),
+        g("/profiles?select=username,email&order=id.asc", jwt),
+        g("/profiles?select=username,score&order=id.asc", jwt),
+        g("/profiles?email=is.null&order=id.asc", jwt),
+        g("/profiles?age=is.null&order=id.asc", jwt),
+        g("/profiles?score=is.null&order=id.asc", jwt),
+        g("/profiles?email=not.is.null&order=id.asc", jwt),
+        g("/profiles?score=gt.80&order=id.asc", jwt),
+        g("/profiles?active=eq.true&order=id.asc", jwt),
+        g("/profiles?username=in.(alice,carol)&order=id.asc", jwt),
+        g("/profiles?age=gte.30&order=id.asc", jwt),
+        g("/profiles?bio=like.*Dev*&order=id.asc", jwt),
+        g("/profiles?username=ilike.*A*&order=id.asc", jwt),
+        g("/profiles?score=gte.70&score=lte.90&order=id.asc", jwt),
+        g("/profiles?or=(email.is.null,score.gt.90)&order=id.asc", jwt),
+
+        // ==== Select with multiple casts ====
+        g("/profiles?select=username,age::text,score::text&order=id.asc", jwt),
+
+        // ==== Order by nullable columns ====
+        g("/profiles?order=email.asc.nullsfirst", jwt),
+        g("/profiles?order=age.desc.nullslast", jwt),
+        g("/profiles?order=score.asc.nullsfirst", jwt),
+        g("/profiles?order=bio.asc.nullsfirst", jwt),
+
+        // ==== not.like / not.ilike ====
+        g("/profiles?username=not.like.a*&order=id.asc", jwt),
+        g("/profiles?username=not.ilike.*E*&order=id.asc", jwt),
+        g("/profiles?bio=not.is.null&order=id.asc", jwt),
+        g("/profiles?bio=not.like.*Dev*&order=id.asc", jwt),
+
+        // ==== Compound filters on profiles ====
+        g("/profiles?active=eq.true&score=gt.0&order=id.asc", jwt),
+        g("/profiles?active=eq.true&age=not.is.null&order=id.asc", jwt),
+        g("/profiles?email=not.is.null&bio=not.is.null&order=id.asc", jwt),
+        g("/profiles?or=(age.lt.30,age.is.null)&order=id.asc", jwt),
+        g("/profiles?or=(username.eq.alice,and(score.gt.70,score.lt.85))&order=id.asc", jwt),
+
+        // ==== Tasks table queries ====
+        g("/tasks?order=id.asc", jwt),
+        g("/tasks?project_id=eq.1&order=id.asc", jwt),
+        g("/tasks?assigned_to=eq.5&order=id.asc", jwt),
+        g("/tasks?created_by=eq.1&order=id.asc", jwt),
+        g("/tasks?select=title,project_id,assigned_to&order=id.asc", jwt),
+
         // ==== 404 for nonexistent table ====
         g_status_only("GET /nonexistent (404)", "/nonexistent", jwt),
     ]

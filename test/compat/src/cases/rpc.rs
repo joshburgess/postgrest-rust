@@ -100,5 +100,36 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         post_json("rpc/echo spaces", "/rpc/echo", json!({"value": "hello world"}), jwt),
         post_json("rpc/echo numbers", "/rpc/echo", json!({"value": "12345"}), jwt),
         g("/rpc/echo?value=with%20spaces", jwt),
+
+        // ==== Boolean return function ====
+        post_json("rpc/is_positive 5", "/rpc/is_positive", json!({"n": 5}), jwt),
+        post_json("rpc/is_positive -1", "/rpc/is_positive", json!({"n": -1}), jwt),
+        post_json("rpc/is_positive 0", "/rpc/is_positive", json!({"n": 0}), jwt),
+        g("/rpc/is_positive?n=10", jwt),
+        g("/rpc/is_positive?n=-5", jwt),
+
+        // ==== Numeric return function ====
+        post_json("rpc/multiply basic", "/rpc/multiply", json!({"a": 3, "b": 4}), jwt),
+        post_json("rpc/multiply decimal", "/rpc/multiply", json!({"a": 2.5, "b": 4}), jwt),
+        post_json("rpc/multiply zero", "/rpc/multiply", json!({"a": 0, "b": 100}), jwt),
+        post_json("rpc/multiply negative", "/rpc/multiply", json!({"a": -3, "b": 7}), jwt),
+        g("/rpc/multiply?a=10&b=20", jwt),
+
+        // ==== Active profiles function ====
+        post_json("rpc/active_profiles default", "/rpc/active_profiles", json!({}), jwt),
+        post_json("rpc/active_profiles min80", "/rpc/active_profiles", json!({"min_score": 80}), jwt),
+        post_json("rpc/active_profiles min100", "/rpc/active_profiles", json!({"min_score": 100}), jwt),
+        g("/rpc/active_profiles?min_score=50", jwt),
+
+        // ==== RPC with select on setof results ====
+        g("/rpc/active_profiles?select=username,score&order=score.desc", jwt),
+        g("/rpc/search_books?query=Rust&select=title", jwt),
+
+        // ==== RPC singular response ====
+        {
+            let mut tc = post_json("rpc/get_author singular", "/rpc/get_author", json!({"author_id": 1}), jwt);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
     ]
 }

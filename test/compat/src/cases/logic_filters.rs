@@ -46,5 +46,25 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
 
         // ==== Deeply nested ====
         g("/books?or=(and(pages.gt.400,or(author_id.eq.1,author_id.eq.2)),title.eq.SQL Deep Dive)&order=id.asc", jwt),
+
+        // ==== or on profiles ====
+        g("/profiles?or=(username.eq.alice,username.eq.dave)&order=id.asc", jwt),
+        g("/profiles?or=(score.gt.90,age.lt.26)&order=id.asc", jwt),
+        g("/profiles?or=(email.is.null,bio.is.null)&order=id.asc", jwt),
+
+        // ==== or with is.null ====
+        g("/employees?or=(manager_id.is.null,id.gt.4)&order=id.asc", jwt),
+        g("/types_test?or=(int_col.is.null,bool_col.is.null)&order=id.asc", jwt),
+
+        // ==== or on tasks ====
+        g("/tasks?or=(assigned_to.eq.4,assigned_to.eq.5)&order=id.asc", jwt),
+        g("/tasks?or=(project_id.eq.1,created_by.eq.3)&order=id.asc", jwt),
+
+        // ==== and nested inside or with profiles ====
+        g("/profiles?or=(and(age.gt.30,score.gt.70),username.eq.bob)&order=id.asc", jwt),
+
+        // ==== or with not ====
+        g("/authors?or=(name.eq.Alice,bio.not.is.null)&order=id.asc", jwt),
+        g("/numbered?or=(val.lte.2,val.gte.99)&order=val.asc", jwt),
     ]
 }

@@ -337,6 +337,52 @@ CREATE FUNCTION api.variadic_func(VARIADIC nums integer[])
 -- ==========================================================================
 
 GRANT SELECT ON ALL TABLES IN SCHEMA api TO web_anon;
+-- ==========================================================================
+-- Table with many nullable columns (for return-specific-columns testing)
+-- ==========================================================================
+
+CREATE TABLE api.profiles (
+    id       serial PRIMARY KEY,
+    username text UNIQUE NOT NULL,
+    email    text,
+    age      integer,
+    bio      text,
+    active   boolean DEFAULT true,
+    score    numeric(5,2) DEFAULT 0
+);
+
+INSERT INTO api.profiles (username, email, age, bio, score) VALUES
+    ('alice', 'alice@example.com', 30, 'Developer', 95.5),
+    ('bob', NULL, 25, NULL, 80.0),
+    ('carol', 'carol@example.com', NULL, 'Designer', NULL),
+    ('dave', 'dave@example.com', 40, 'Manager', 70.25);
+
+-- ==========================================================================
+-- Function that returns specific columns (for testing select on RPC)
+-- ==========================================================================
+
+CREATE FUNCTION api.active_profiles(min_score numeric DEFAULT 0)
+    RETURNS SETOF api.profiles
+    LANGUAGE sql STABLE
+    AS $$ SELECT * FROM api.profiles WHERE active = true AND score >= min_score ORDER BY id $$;
+
+-- Function with boolean return
+CREATE FUNCTION api.is_positive(n integer)
+    RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$ SELECT n > 0 $$;
+
+-- Function returning numeric
+CREATE FUNCTION api.multiply(a numeric, b numeric)
+    RETURNS numeric
+    LANGUAGE sql IMMUTABLE
+    AS $$ SELECT a * b $$;
+
+-- ==========================================================================
+-- Grant permissions on new tables
+-- ==========================================================================
+
+GRANT SELECT ON ALL TABLES IN SCHEMA api TO web_anon;
 GRANT ALL ON ALL TABLES IN SCHEMA api TO test_user;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA api TO test_user;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA api TO web_anon;

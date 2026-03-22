@@ -264,6 +264,86 @@ pub fn cases(jwt_anon: &str, jwt_user: &str) -> Vec<TestCase> {
             tc.headers.push(("Prefer", "count=exact".to_string()));
             tc
         },
+
+        // ==== Profiles edge cases ====
+        g("/profiles?order=id.asc", jwt_anon),
+        g("/profiles?order=score.desc.nullslast", jwt_anon),
+        g("/profiles?order=username.asc", jwt_anon),
+        g("/profiles?select=username&order=username.asc", jwt_anon),
+        g("/profiles?username=neq.alice&order=id.asc", jwt_anon),
+        g("/profiles?age=gt.25&age=lt.35&order=id.asc", jwt_anon),
+        g("/profiles?or=(score.gt.90,age.lt.26)&order=id.asc", jwt_anon),
+        g("/profiles?email=like.*example*&order=id.asc", jwt_anon),
+
+        // ==== Singular on profiles ====
+        {
+            let mut tc = g("/profiles?username=eq.alice", jwt_anon);
+            tc.name = "singular profile";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== Count on profiles ====
+        {
+            let mut tc = g("/profiles?order=id.asc", jwt_anon);
+            tc.name = "count profiles";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/profiles?active=eq.true&order=id.asc", jwt_anon);
+            tc.name = "count active profiles";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+
+        // ==== CSV on profiles ====
+        {
+            let mut tc = g("/profiles?select=username,score&order=id.asc", jwt_anon);
+            tc.name = "CSV profiles";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+
+        // ==== Tasks with embedding ====
+        g("/tasks?select=title,projects(name)&order=id.asc", jwt_anon),
+        g("/projects?select=name,tasks(title)&order=id.asc", jwt_anon),
+        g("/projects?select=name,tasks(title)&id=eq.1", jwt_anon),
+
+        // ==== More or/and on profiles ====
+        g("/profiles?or=(username.eq.alice,username.eq.bob)&order=id.asc", jwt_anon),
+        g("/profiles?or=(score.is.null,score.lt.75)&order=id.asc", jwt_anon),
+        g("/profiles?and=(active.eq.true,score.gt.0)&order=id.asc", jwt_anon),
+
+        // ==== Not filters on profiles ====
+        g("/profiles?username=not.in.(alice,bob)&order=id.asc", jwt_anon),
+        g("/profiles?score=not.is.null&order=id.asc", jwt_anon),
+        g("/profiles?age=not.gt.30&order=id.asc", jwt_anon),
+
+        // ==== Range on profiles ====
+        {
+            let mut tc = g("/profiles?order=id.asc", jwt_anon);
+            tc.name = "Range profiles 0-1";
+            tc.headers.push(("Range", "0-1".to_string()));
+            tc
+        },
+
+        // ==== More JSON on items ====
+        g("/items?metadata=cs.{}&order=id.asc", jwt_anon),
+        g("/items?select=name,metadata&active=eq.true&order=id.asc", jwt_anon),
+
+        // ==== Numbered table: various range combinations ====
+        g("/numbered?val=gte.50&val=lte.55&order=val.asc", jwt_anon),
+        g("/numbered?val=in.(1,50,100)&order=val.asc", jwt_anon),
+        g("/numbered?val=not.in.(1,2,3,4,5)&order=val.asc&limit=5", jwt_anon),
+        g("/numbered?or=(val.lte.3,val.gte.98)&order=val.asc", jwt_anon),
+
+        // ==== Select specific columns on various tables ====
+        g("/employees?select=name,manager_id&order=id.asc", jwt_anon),
+        g("/entities?select=id,name&order=id.asc", jwt_anon),
+        g("/tasks?select=id,title&order=id.asc", jwt_anon),
+        g("/compound_pk?select=k1,k2&order=k1.asc,k2.asc", jwt_anon),
     ]
 }
 

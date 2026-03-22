@@ -103,14 +103,50 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         mut_skip("delete settings compat", "DELETE", "/settings?key=like.compat*",
             None, jwt, vec![minimal.clone()]),
 
+        // ==== Profile mutations ====
+        mut_skip("insert profile", "POST", "/profiles",
+            Some(json!({"username": "compat-user", "email": "u@test.com", "age": 28})),
+            jwt, vec![repr.clone()]),
+        mut_skip("insert profile no email", "POST", "/profiles",
+            Some(json!({"username": "compat-noemail", "age": 22})),
+            jwt, vec![repr.clone()]),
+        mut_skip("insert profile minimal", "POST", "/profiles",
+            Some(json!({"username": "compat-min"})),
+            jwt, vec![minimal.clone()]),
+        mut_skip("update profile score", "PATCH", "/profiles?username=eq.compat-user",
+            Some(json!({"score": 55.5})), jwt, vec![repr.clone()]),
+        mut_skip("update profile set null", "PATCH", "/profiles?username=eq.compat-user",
+            Some(json!({"bio": null, "age": null})), jwt, vec![repr.clone()]),
+
+        // ==== Insert multi-row profiles ====
+        mut_skip("insert profiles multi", "POST", "/profiles",
+            Some(json!([
+                {"username": "compat-m1", "score": 10},
+                {"username": "compat-m2", "score": 20},
+                {"username": "compat-m3", "score": 30}
+            ])), jwt, vec![repr.clone()]),
+
+        // ==== Delete with various filter types ====
+        mut_skip("delete profiles by score", "DELETE", "/profiles?score=lt.35&username=like.compat-m*",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== Insert into tasks ====
+        mut_skip("insert task", "POST", "/tasks",
+            Some(json!({"title": "compat-task", "project_id": 1, "assigned_to": 4})),
+            jwt, vec![repr.clone()]),
+
         // Cleanup remaining compat data
-        mut_skip("cleanup items compat", "DELETE", "/items?name=like.compat*",
+        mut_skip("cleanup items", "DELETE", "/items?name=like.compat*",
             None, jwt, vec![minimal.clone()]),
-        mut_skip("cleanup types_test compat", "DELETE", "/types_test?text_col=eq.inserted",
+        mut_skip("cleanup types_test", "DELETE", "/types_test?text_col=eq.inserted",
             None, jwt, vec![minimal.clone()]),
-        mut_skip("cleanup unicode compat", "DELETE", "/unicode_test?name=like.compat*",
+        mut_skip("cleanup unicode", "DELETE", "/unicode_test?name=like.compat*",
             None, jwt, vec![minimal.clone()]),
         mut_skip("cleanup upsert_test", "DELETE", "/upsert_test?value=eq.compat-updated",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup profiles", "DELETE", "/profiles?username=like.compat*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup tasks", "DELETE", "/tasks?title=eq.compat-task",
             None, jwt, vec![minimal.clone()]),
     ]
 }
