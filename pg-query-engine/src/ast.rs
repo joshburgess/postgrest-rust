@@ -41,6 +41,12 @@ pub enum SelectItem {
         inner: bool,
         sub_request: Box<ReadRequest>,
     },
+    /// Spread embed: `select=...authors(name)` inlines the embedded columns
+    /// into the parent row. Only valid for to-one (ManyToOne) relationships.
+    Spread {
+        target: String,
+        columns: Vec<SelectItem>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +146,8 @@ pub struct InsertRequest {
     pub table: QualifiedName,
     pub rows: Vec<serde_json::Map<String, serde_json::Value>>,
     pub on_conflict: Option<ConflictAction>,
+    /// Specific columns for ON CONFLICT. If None, uses the primary key.
+    pub on_conflict_columns: Option<Vec<String>>,
     pub returning: Vec<String>,
 }
 

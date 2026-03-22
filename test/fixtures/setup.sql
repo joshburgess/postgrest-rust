@@ -65,6 +65,14 @@ CREATE TABLE api.settings (
     PRIMARY KEY (key)
 );
 
+-- Table with generated column
+CREATE TABLE api.products (
+    id    serial PRIMARY KEY,
+    name  text   NOT NULL,
+    price numeric NOT NULL,
+    tax   numeric GENERATED ALWAYS AS (price * 0.1) STORED
+);
+
 -- ==========================================================================
 -- Views
 -- ==========================================================================
@@ -124,6 +132,10 @@ INSERT INTO api.articles (title, body, status) VALUES
 INSERT INTO api.settings (key, value) VALUES
     ('site_name', 'Test Site'),
     ('theme', 'dark');
+
+INSERT INTO api.products (name, price) VALUES
+    ('Widget', 10.00),
+    ('Gadget', 25.50);
 
 -- ==========================================================================
 -- Permissions

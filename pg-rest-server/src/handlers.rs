@@ -167,6 +167,15 @@ fn to_singular(json_body: &str) -> Result<String, ApiError> {
     }
 }
 
+/// Check if the Accept header requests a query plan.
+fn wants_explain(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/vnd.pgrst.plan+json"))
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // Execute helper
 // ---------------------------------------------------------------------------
@@ -322,7 +331,33 @@ pub async fn handle_read(
         count: prefs.count,
     };
 
-    let sql = build_sql(&cache, &ApiRequest::Read(read_req.clone()), schemas)?;
+    let mut sql = build_sql(&cache, &ApiRequest::Read(read_req.clone()), schemas)?;
+
+    // EXPLAIN support: prepend EXPLAIN to return the query plan.
+    if wants_explain(&headers) {
+        sql.sql = format!("EXPLAIN (FORMAT JSON) {}", sql.sql);
+        // EXPLAIN returns json type — execute directly and collect.
+        let mut client = state.pool.get().await?;
+        let txn = client.transaction().await?;
+        let role = claims.as_ref().map(|c| c.role.as_str())
+            .unwrap_or(&state.config.database.anon_role);
+        let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
+        txn.batch_execute(&format!("SET LOCAL ROLE {quoted_role}")).await?;
+        let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
+            .params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+        let rows = txn.query(&sql.sql, &param_refs).await?;
+        txn.commit().await?;
+        // EXPLAIN FORMAT JSON returns a single row with a json column.
+        let plan: serde_json::Value = rows.first()
+            .and_then(|r| r.try_get::<_, serde_json::Value>(0).ok())
+            .unwrap_or(serde_json::json!([]));
+        return Ok((
+            StatusCode::OK,
+            [(header::CONTENT_TYPE.as_str(), "application/vnd.pgrst.plan+json")],
+            plan.to_string(),
+        )
+            .into_response());
+    }
 
     let count_sql = if prefs.count == CountOption::Exact {
         Some(build_count_sql(&cache, &read_req, schemas)?)
@@ -394,7 +429,7 @@ pub async fn handle_read(
 pub async fn handle_insert(
     State(state): State<Arc<AppState>>,
     Path(table): Path<String>,
-    Query(_params): Query<HashMap<String, String>>,
+    Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Response, ApiError> {
@@ -418,10 +453,15 @@ pub async fn handle_insert(
         Vec::new()
     };
 
+    let on_conflict_columns = params
+        .get("on_conflict")
+        .map(|s| s.split(',').map(|c| c.trim().to_string()).collect());
+
     let req = ApiRequest::Insert(InsertRequest {
         table: table_qn,
         rows,
         on_conflict: prefs.resolution,
+        on_conflict_columns,
         returning,
     });
 

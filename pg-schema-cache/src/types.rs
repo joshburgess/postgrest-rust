@@ -97,6 +97,8 @@ pub struct Column {
     pub default_expr: Option<String>,
     pub max_length: Option<i32>,
     pub is_pk: bool,
+    /// True for GENERATED ALWAYS AS (...) STORED columns.
+    pub is_generated: bool,
     pub comment: Option<String>,
     pub enum_values: Option<Vec<String>>,
 }

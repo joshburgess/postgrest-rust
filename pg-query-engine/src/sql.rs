@@ -180,10 +180,91 @@ impl<'a> SqlBuilder<'a> {
                         inner_conditions.push(cond);
                     }
                 }
+                SelectItem::Spread { target, columns } => {
+                    let spread_parts =
+                        self.build_spread(parent_qn, target, columns)?;
+                    parts.extend(spread_parts);
+                }
             }
         }
 
         Ok((parts.join(", "), inner_conditions))
+    }
+
+    /// Generate correlated subqueries for each spread column.
+    /// Only valid for ManyToOne (to-one) relationships.
+    fn build_spread(
+        &self,
+        parent_qn: &QualifiedName,
+        target_name: &str,
+        columns: &[SelectItem],
+    ) -> Result<Vec<String>, QueryEngineError> {
+        let target_table = self.find_table_by_name(target_name)?;
+        let target_qn = target_table.name.clone();
+        let target_sql = quote_qualified(&target_qn);
+        let parent_sql = quote_qualified(parent_qn);
+
+        // Find ManyToOne relationship from parent to target.
+        let rels = self.cache.get_relationships(parent_qn);
+        let rel = rels
+            .iter()
+            .find(|r| {
+                r.from_table == *parent_qn
+                    && r.to_table == target_qn
+                    && r.rel_type == pg_schema_cache::RelType::ManyToOne
+            })
+            .ok_or_else(|| {
+                QueryEngineError::NoRelationship(parent_qn.clone(), target_name.to_string())
+            })?;
+
+        // Build join condition.
+        let join_cond: Vec<String> = rel
+            .columns
+            .iter()
+            .map(|(from_col, to_col)| {
+                format!(
+                    "{}.{} = {}.{}",
+                    target_sql,
+                    quote_ident(to_col),
+                    parent_sql,
+                    quote_ident(from_col)
+                )
+            })
+            .collect();
+        let where_clause = join_cond.join(" AND ");
+
+        // Resolve columns (* = all columns from target table).
+        let col_names: Vec<String> = if columns.len() == 1
+            && matches!(columns[0], SelectItem::Star)
+        {
+            target_table
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .collect()
+        } else {
+            columns
+                .iter()
+                .filter_map(|s| match s {
+                    SelectItem::Column(n) => Some(n.clone()),
+                    SelectItem::Cast { column, .. } => Some(column.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        Ok(col_names
+            .iter()
+            .map(|col| {
+                format!(
+                    "(SELECT {} FROM {} WHERE {}) AS {}",
+                    quote_ident(col),
+                    target_sql,
+                    where_clause,
+                    quote_ident(col)
+                )
+            })
+            .collect())
     }
 
     // -----------------------------------------------------------------------
@@ -416,9 +497,17 @@ impl<'a> SqlBuilder<'a> {
 
         // Collect all column names across all rows (preserving order).
         let mut columns: Vec<String> = Vec::new();
+        // Collect generated column names to exclude from INSERT.
+        let generated_cols: std::collections::HashSet<&str> = table
+            .columns
+            .iter()
+            .filter(|c| c.is_generated)
+            .map(|c| c.name.as_str())
+            .collect();
+
         for row in &req.rows {
             for key in row.keys() {
-                if !columns.contains(key) {
+                if !columns.contains(key) && !generated_cols.contains(key.as_str()) {
                     columns.push(key.clone());
                 }
             }
@@ -447,7 +536,7 @@ impl<'a> SqlBuilder<'a> {
             value_rows.push(format!("({})", values.join(", ")));
         }
 
-        let conflict = self.build_on_conflict(&req.on_conflict, table)?;
+        let conflict = self.build_on_conflict(&req.on_conflict, &req.on_conflict_columns, table)?;
         let returning = Self::build_returning(&req.returning);
 
         let mutation = format!(
@@ -823,6 +912,7 @@ impl<'a> SqlBuilder<'a> {
     fn build_on_conflict(
         &self,
         action: &Option<ConflictAction>,
+        conflict_columns: &Option<Vec<String>>,
         table: &Table,
     ) -> Result<String, QueryEngineError> {
         let action = match action {
@@ -830,12 +920,16 @@ impl<'a> SqlBuilder<'a> {
             None => return Ok(String::new()),
         };
 
-        if table.primary_key.is_empty() {
+        // Use explicit conflict columns if provided, otherwise PK.
+        let conflict_cols = if let Some(cols) = conflict_columns {
+            cols.clone()
+        } else if !table.primary_key.is_empty() {
+            table.primary_key.clone()
+        } else {
             return Err(QueryEngineError::NoPrimaryKey(table.name.clone()));
-        }
+        };
 
-        let pk_list = table
-            .primary_key
+        let pk_list = conflict_cols
             .iter()
             .map(|c| quote_ident(c))
             .collect::<Vec<_>>()
@@ -965,6 +1059,7 @@ mod tests {
                         default_expr: None,
                         max_length: None,
                         is_pk: true,
+                        is_generated: false,
                         comment: None,
                         enum_values: None,
                     },
@@ -976,6 +1071,7 @@ mod tests {
                         default_expr: None,
                         max_length: None,
                         is_pk: false,
+                        is_generated: false,
                         comment: None,
                         enum_values: None,
                     },
@@ -987,6 +1083,7 @@ mod tests {
                         default_expr: None,
                         max_length: None,
                         is_pk: false,
+                        is_generated: false,
                         comment: None,
                         enum_values: None,
                     },
@@ -1051,6 +1148,7 @@ mod tests {
             table: QualifiedName::new("api", "users"),
             rows: vec![row],
             on_conflict: Some(ConflictAction::MergeDuplicates),
+            on_conflict_columns: None,
             returning: vec!["*".into()],
         });
 

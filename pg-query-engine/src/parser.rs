@@ -25,6 +25,22 @@ fn parse_select_item(input: &str) -> Result<SelectItem, ParseError> {
         return Ok(SelectItem::Star);
     }
 
+    // Spread embed: `...target(columns)`
+    if let Some(rest) = input.strip_prefix("...") {
+        if let Some(paren_pos) = rest.find('(') {
+            if !rest.ends_with(')') {
+                return Err(ParseError::InvalidSelect(input.to_string()));
+            }
+            let target = &rest[..paren_pos];
+            let inner = &rest[paren_pos + 1..rest.len() - 1];
+            let sub_select = parse_select(inner)?;
+            return Ok(SelectItem::Spread {
+                target: target.to_string(),
+                columns: sub_select,
+            });
+        }
+    }
+
     // Look for the first top-level `(` to detect embedding.
     if let Some(paren_pos) = input.find('(') {
         if !input.ends_with(')') {

@@ -711,3 +711,97 @@ async fn test_singular_response_406_multiple() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_ACCEPTABLE);
 }
+
+// ===========================================================================
+// Spread embed
+// ===========================================================================
+
+#[tokio::test]
+async fn test_spread_embed() {
+    let app = setup().await;
+    let (status, json) =
+        get_json(&app, "/books?select=title,...authors(name)&title=eq.Learning%20Rust").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    // Author name should be spread into the book row.
+    assert_eq!(arr[0]["title"], "Learning Rust");
+    assert_eq!(arr[0]["name"], "Alice");
+    // Should NOT have an "authors" nested object.
+    assert!(arr[0].get("authors").is_none());
+}
+
+// ===========================================================================
+// EXPLAIN
+// ===========================================================================
+
+#[tokio::test]
+async fn test_explain() {
+    let app = setup().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/authors")
+                .header(header::AUTHORIZATION, format!("Bearer {}", make_jwt("web_anon")))
+                .header(header::ACCEPT, "application/vnd.pgrst.plan+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    assert!(ct.contains("application/vnd.pgrst.plan+json"));
+    let body = body_string(resp.into_body()).await;
+    // EXPLAIN output should contain query plan info.
+    assert!(body.contains("Plan") || body.contains("plan"), "expected plan in: {body}");
+}
+
+// ===========================================================================
+// Generated columns
+// ===========================================================================
+
+#[tokio::test]
+async fn test_generated_column_excluded_from_insert() {
+    let app = setup().await;
+    // Insert a product — the `tax` column is generated and should be excluded.
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/products",
+        "test_user",
+        Some(serde_json::json!({"name": "Doohickey", "price": 50.0})),
+        vec![("prefer", "return=representation")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    // tax should be auto-computed as price * 0.1 = 5.0
+    let tax = arr[0]["tax"].as_f64().unwrap();
+    assert!((tax - 5.0).abs() < 0.01, "expected tax=5.0, got {tax}");
+}
+
+// ===========================================================================
+// on_conflict with specific columns
+// ===========================================================================
+
+#[tokio::test]
+async fn test_on_conflict_specific_columns() {
+    let app = setup().await;
+    // Upsert using the `name` unique constraint on tags (not PK).
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/tags?on_conflict=name",
+        "test_user",
+        Some(serde_json::json!({"name": "programming"})),
+        vec![("prefer", "return=representation,resolution=merge-duplicates")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr[0]["name"], "programming");
+}

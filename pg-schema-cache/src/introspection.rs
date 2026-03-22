@@ -50,6 +50,7 @@ SELECT
     (c.column_default IS NOT NULL) AS has_default,
     c.column_default::text AS default_expr,
     c.character_maximum_length::int4 AS max_length,
+    (c.is_generated = 'ALWAYS') AS is_generated,
     pgd.description::text AS comment
 FROM information_schema.columns c
 LEFT JOIN pg_catalog.pg_namespace pn ON pn.nspname = c.table_schema
@@ -249,6 +250,7 @@ async fn load_columns(
             default_expr: row.get("default_expr"),
             max_length: row.get("max_length"),
             is_pk: false, // set later from PK query
+            is_generated: row.get("is_generated"),
             comment: row.get("comment"),
             enum_values: None, // set later from enum query
         });
