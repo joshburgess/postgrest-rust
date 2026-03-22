@@ -1,0 +1,535 @@
+//! Integration tests against a real PostgreSQL instance.
+//!
+//! Requires:
+//!   docker compose up -d
+//!
+//! Run with:
+//!   cargo test -p pg-rest-server --test integration
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{header, Method, Request, StatusCode};
+use http_body_util::BodyExt;
+use tokio::sync::watch;
+use tower::ServiceExt; // for oneshot
+
+use pg_rest_server::config::AppConfig;
+use pg_rest_server::state::AppState;
+
+const DB_URI: &str = "postgres://authenticator:authenticator@localhost:54322/postgrest_test";
+const JWT_SECRET: &str = "reallyreallyreallyreallyverysafe";
+
+// ---------------------------------------------------------------------------
+// Test harness
+// ---------------------------------------------------------------------------
+
+async fn setup() -> axum::Router {
+    let config = AppConfig {
+        database: pg_rest_server::config::DatabaseConfig {
+            uri: DB_URI.to_string(),
+            schemas: vec!["api".to_string()],
+            anon_role: "web_anon".to_string(),
+            pool_size: 5,
+        },
+        server: pg_rest_server::config::ServerConfig::default(),
+        jwt: pg_rest_server::config::JwtConfig {
+            secret: JWT_SECRET.to_string(),
+        },
+    };
+
+    let pg_config: tokio_postgres::Config = config.database.uri.parse().unwrap();
+    let mgr = deadpool_postgres::Manager::new(pg_config, tokio_postgres::NoTls);
+    let pool = deadpool_postgres::Pool::builder(mgr)
+        .max_size(config.database.pool_size)
+        .build()
+        .unwrap();
+
+    let client = pool.get().await.unwrap();
+    let cache =
+        pg_schema_cache::build_schema_cache(&client, &config.database.schemas)
+            .await
+            .unwrap();
+    drop(client);
+
+    let (_, cache_rx) = watch::channel(Arc::new(cache));
+
+    let jwt_decoding_key =
+        jsonwebtoken::DecodingKey::from_secret(config.jwt.secret.as_bytes());
+    let mut jwt_validation =
+        jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+    jwt_validation.required_spec_claims = Default::default();
+
+    let state = Arc::new(AppState {
+        pool,
+        schema_cache: cache_rx,
+        config,
+        jwt_decoding_key,
+        jwt_validation,
+    });
+
+    pg_rest_server::build_router(state)
+}
+
+fn make_jwt(role: &str) -> String {
+    let claims = serde_json::json!({ "role": role });
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+    )
+    .unwrap()
+}
+
+async fn body_string(body: Body) -> String {
+    let bytes = body.collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {}", make_jwt("web_anon")))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = body_string(resp.into_body()).await;
+    if !status.is_success() {
+        eprintln!("[{status}] {uri} → {body}");
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body));
+    (status, json)
+}
+
+async fn request(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    role: &str,
+    body: Option<serde_json::Value>,
+    extra_headers: Vec<(&str, &str)>,
+) -> (StatusCode, String) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {}", make_jwt(role)))
+        .header(header::CONTENT_TYPE, "application/json");
+
+    for (k, v) in &extra_headers {
+        builder = builder.header(*k, *v);
+    }
+
+    let req_body = match body {
+        Some(v) => Body::from(v.to_string()),
+        None => Body::empty(),
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(builder.body(req_body).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let text = body_string(resp.into_body()).await;
+    (status, text)
+}
+
+// ===========================================================================
+// Schema cache tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_schema_cache_loads_tables() {
+    let app = setup().await;
+    // If setup succeeds, the schema cache loaded without error.
+    // Verify via the OpenAPI spec which lists all tables.
+    let (status, spec) = get_json(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    let paths = spec.get("paths").unwrap().as_object().unwrap();
+    assert!(paths.contains_key("/authors"));
+    assert!(paths.contains_key("/books"));
+    assert!(paths.contains_key("/tags"));
+    assert!(paths.contains_key("/articles"));
+    assert!(paths.contains_key("/settings"));
+    assert!(paths.contains_key("/rpc/add"));
+    assert!(paths.contains_key("/rpc/search_books"));
+}
+
+// ===========================================================================
+// Read (GET) tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_read_all_authors() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+}
+
+#[tokio::test]
+async fn test_read_select_columns() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?select=name").await;
+    assert_eq!(status, StatusCode::OK);
+    let first = &json.as_array().unwrap()[0];
+    assert!(first.get("name").is_some());
+    assert!(first.get("id").is_none());
+}
+
+#[tokio::test]
+async fn test_read_filter_eq() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?name=eq.Alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["name"], "Alice");
+}
+
+#[tokio::test]
+async fn test_read_filter_gt() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/books?pages=gt.400").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert!(arr.iter().all(|b| b["pages"].as_i64().unwrap() > 400));
+}
+
+#[tokio::test]
+async fn test_read_filter_in() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?id=in.(1,2)").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_read_filter_is_null() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?bio=is.null").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["name"], "Carol");
+}
+
+#[tokio::test]
+async fn test_read_order() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?order=name.desc").await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<&str> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["Carol", "Bob", "Alice"]);
+}
+
+#[tokio::test]
+async fn test_read_limit_offset() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?order=id.asc&limit=2&offset=1").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["name"], "Bob");
+}
+
+#[tokio::test]
+async fn test_read_nonexistent_table() {
+    let app = setup().await;
+    let (status, _) = get_json(&app, "/nonexistent").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ===========================================================================
+// Embedding tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_embed_one_to_many() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?select=name,books(title)&name=eq.Alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    let books = arr[0]["books"].as_array().unwrap();
+    assert_eq!(books.len(), 2);
+}
+
+#[tokio::test]
+async fn test_embed_many_to_one() {
+    let app = setup().await;
+    let (status, json) =
+        get_json(&app, "/books?select=title,authors(name)&title=eq.Learning%20Rust").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["authors"]["name"], "Alice");
+}
+
+// ===========================================================================
+// Insert (POST) tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_insert_and_return() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/tags",
+        "test_user",
+        Some(serde_json::json!({"name": format!("test-tag-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos())})),
+        vec![("prefer", "return=representation")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert!(arr[0]["name"].as_str().unwrap().starts_with("test-tag-"));
+}
+
+#[tokio::test]
+async fn test_insert_minimal() {
+    let app = setup().await;
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/tags",
+        "test_user",
+        Some(serde_json::json!({"name": format!("eph-tag-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos())})),
+        vec![],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+// ===========================================================================
+// Update (PATCH) tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_update_with_filter() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::PATCH,
+        "/settings?key=eq.theme",
+        "test_user",
+        Some(serde_json::json!({"value": "light"})),
+        vec![("prefer", "return=representation")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json.as_array().unwrap()[0]["value"], "light");
+}
+
+// ===========================================================================
+// Delete (DELETE) tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_delete_with_filter() {
+    let app = setup().await;
+    // Insert a row to delete.
+    request(
+        &app,
+        Method::POST,
+        "/tags",
+        "test_user",
+        Some(serde_json::json!({"name": "to-delete"})),
+        vec![],
+    )
+    .await;
+
+    let (status, _) = request(
+        &app,
+        Method::DELETE,
+        "/tags?name=eq.to-delete",
+        "test_user",
+        None,
+        vec![],
+    )
+    .await;
+    assert!(status == StatusCode::NO_CONTENT || status == StatusCode::OK);
+}
+
+// ===========================================================================
+// Upsert tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_upsert_merge_duplicates() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/settings",
+        "test_user",
+        Some(serde_json::json!({"key": "site_name", "value": "Updated Site"})),
+        vec![
+            ("prefer", "return=representation,resolution=merge-duplicates"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json.as_array().unwrap()[0]["value"], "Updated Site");
+}
+
+// ===========================================================================
+// RPC (function call) tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_rpc_scalar() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/rpc/add",
+        "web_anon",
+        Some(serde_json::json!({"a": 3, "b": 4})),
+        vec![],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // Result should contain 7
+    assert!(body.contains('7'), "expected 7 in: {body}");
+}
+
+#[tokio::test]
+async fn test_rpc_setof() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/rpc/search_books",
+        "web_anon",
+        Some(serde_json::json!({"query": "Rust"})),
+        vec![],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2); // Learning Rust, Advanced Rust
+}
+
+#[tokio::test]
+async fn test_rpc_default_param() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/rpc/greet",
+        "web_anon",
+        Some(serde_json::json!({})),
+        vec![],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Hello, world!"), "got: {body}");
+}
+
+#[tokio::test]
+async fn test_rpc_get_immutable() {
+    let app = setup().await;
+    let (status, body) = get_json(&app, "/rpc/add?a=10&b=20").await;
+    assert_eq!(status, StatusCode::OK);
+    let text = body.to_string();
+    assert!(text.contains("30"), "expected 30 in: {text}");
+}
+
+// ===========================================================================
+// RLS tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_rls_anon_sees_only_published() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/articles").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["status"], "published");
+}
+
+#[tokio::test]
+async fn test_rls_user_sees_all() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::GET,
+        "/articles",
+        "test_user",
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+}
+
+// ===========================================================================
+// Health endpoints
+// ===========================================================================
+
+#[tokio::test]
+async fn test_live() {
+    let app = setup().await;
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_ready() {
+    let app = setup().await;
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ===========================================================================
+// OpenAPI spec tests
+// ===========================================================================
+
+#[tokio::test]
+async fn test_openapi_v2() {
+    let app = setup().await;
+    let (status, spec) = get_json(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(spec["swagger"], "2.0");
+    assert!(spec["definitions"].get("authors").is_some());
+}
+
+#[tokio::test]
+async fn test_openapi_v3() {
+    let app = setup().await;
+    let (status, spec) = get_json(&app, "/?openapi-version=3").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(spec["openapi"], "3.0.3");
+    assert!(spec["components"]["schemas"].get("authors").is_some());
+}

@@ -150,19 +150,20 @@ impl<'a> SqlBuilder<'a> {
         let parent_sql = quote_qualified(parent_qn);
         let sub_alias = self.next_embed_alias();
 
-        // Find relationship between parent and target.
-        let rel = self
-            .cache
-            .get_relationships(parent_qn)
-            .into_iter()
-            .find(|r| {
-                (r.to_table == target_qn && r.from_table == *parent_qn)
-                    || (r.from_table == target_qn && r.to_table == *parent_qn)
+        // Find relationship from parent to target.
+        // Prefer the relationship where from_table == parent (natural direction).
+        let rels = self.cache.get_relationships(parent_qn);
+        let rel = rels
+            .iter()
+            .find(|r| r.from_table == *parent_qn && r.to_table == target_qn)
+            .or_else(|| {
+                rels.iter()
+                    .find(|r| r.from_table == target_qn && r.to_table == *parent_qn)
             })
             .ok_or_else(|| {
                 QueryEngineError::NoRelationship(parent_qn.clone(), target_name.to_string())
-            })?
-            .clone();
+            })?;
+        let rel = (*rel).clone();
 
         // Build sub-select columns.
         let sub_select =
@@ -680,11 +681,11 @@ impl<'a> SqlBuilder<'a> {
         let mut s = String::new();
         if let Some(l) = limit {
             let p = self.add_param(l.to_string());
-            s.push_str(&format!(" LIMIT {p}"));
+            s.push_str(&format!(" LIMIT ({p}::text)::int8"));
         }
         if let Some(o) = offset {
             let p = self.add_param(o.to_string());
-            s.push_str(&format!(" OFFSET {p}"));
+            s.push_str(&format!(" OFFSET ({p}::text)::int8"));
         }
         s
     }
@@ -785,11 +786,18 @@ fn quote_qualified(qn: &QualifiedName) -> String {
     format!("{}.{}", quote_ident(&qn.schema), quote_ident(&qn.name))
 }
 
-/// Apply a `::pg_type` cast suffix when the type is known.
+/// Cast a text parameter to the target PostgreSQL type.
+///
+/// All bind parameters are sent as `text` via tokio-postgres. A direct
+/// `$1::int4` would fail at the protocol level because the driver tries to
+/// serialise `String` as `int4`. Using the double-cast `($1::text)::int4`
+/// ensures the driver sends `text` and PostgreSQL converts server-side.
 fn cast_param(placeholder: &str, pg_type: Option<&str>) -> String {
     match pg_type {
-        Some(t) => format!("{placeholder}::{t}"),
-        None => placeholder.to_string(),
+        Some("text" | "varchar" | "bpchar" | "name" | "citext") | None => {
+            placeholder.to_string()
+        }
+        Some(t) => format!("({placeholder}::text)::{t}"),
     }
 }
 
@@ -900,9 +908,9 @@ mod tests {
         let out = build_sql(&cache, &req, &["api".into()]).unwrap();
         assert!(out.sql.contains("json_agg"));
         assert!(out.sql.contains("\"id\", \"name\""));
-        assert!(out.sql.contains("\"age\" > $1::int4"));
+        assert!(out.sql.contains("\"age\" > ($1::text)::int4"));
         assert!(out.sql.contains("ORDER BY \"name\" ASC"));
-        assert!(out.sql.contains("LIMIT $2"));
+        assert!(out.sql.contains("LIMIT ($2::text)::int8"));
         assert_eq!(out.params, vec!["18", "10"]);
     }
 
@@ -944,7 +952,7 @@ mod tests {
 
         let out = build_sql(&cache, &req, &["api".into()]).unwrap();
         assert!(out.sql.contains("DELETE FROM"));
-        assert!(out.sql.contains("\"id\" = $1::int4"));
+        assert!(out.sql.contains("\"id\" = ($1::text)::int4"));
         assert!(out.sql.contains("RETURNING *"));
     }
 }

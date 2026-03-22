@@ -24,7 +24,13 @@ impl std::fmt::Display for ApiError {
             Self::BadRequest(m) => write!(f, "{m}"),
             Self::QueryEngine(e) => write!(f, "{e}"),
             Self::Parse(e) => write!(f, "{e}"),
-            Self::Database(e) => write!(f, "database error: {e}"),
+            Self::Database(e) => {
+                if let Some(db_err) = e.as_db_error() {
+                    write!(f, "database error: {}: {}", db_err.code().code(), db_err.message())
+                } else {
+                    write!(f, "database error: {e}")
+                }
+            }
             Self::Pool(e) => write!(f, "connection pool error: {e}"),
         }
     }

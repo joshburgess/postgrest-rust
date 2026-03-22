@@ -1,23 +1,11 @@
-mod auth;
-mod config;
-mod error;
-mod handlers;
-mod openapi;
-mod state;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::routing::get;
-use axum::Router;
 use clap::Parser;
 use tokio::sync::watch;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
 
-use config::AppConfig;
-use handlers::*;
-use state::AppState;
+use pg_rest_server::config::AppConfig;
+use pg_rest_server::state::AppState;
 
 #[derive(Parser)]
 #[command(name = "pg-rest-server", about = "Automatic REST API for PostgreSQL")]
@@ -83,11 +71,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         jsonwebtoken::DecodingKey::from_secret(config.jwt.secret.as_bytes());
     let jwt_validation = {
         let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
-        v.required_spec_claims = Default::default(); // don't require exp
+        v.required_spec_claims = Default::default();
         v
     };
 
-    // 7. Build application state.
+    // 7. Build application state + router.
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let state = Arc::new(AppState {
         pool,
@@ -97,24 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         jwt_validation,
     });
 
-    // 8. Build router.
-    let app = Router::new()
-        .route("/", get(handle_root))
-        .route("/live", get(handle_live))
-        .route("/ready", get(handle_ready))
-        .route("/rpc/{function}", get(handle_rpc).post(handle_rpc))
-        .route(
-            "/{table}",
-            get(handle_read)
-                .post(handle_insert)
-                .patch(handle_update)
-                .delete(handle_delete),
-        )
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state);
+    let app = pg_rest_server::build_router(state);
 
-    // 9. Start server.
+    // 8. Start server.
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("Listening on {bind_addr}");
 

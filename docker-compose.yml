@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "54322:5432"
+    environment:
+      POSTGRES_DB: postgrest_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./test/fixtures/setup.sql:/docker-entrypoint-initdb.d/setup.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
