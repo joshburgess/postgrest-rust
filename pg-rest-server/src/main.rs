@@ -31,10 +31,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Create database pool.
     let pg_config: tokio_postgres::Config = config.database.uri.parse()?;
-    let mgr = deadpool_postgres::Manager::new(pg_config, tokio_postgres::NoTls);
-    let pool = deadpool_postgres::Pool::builder(mgr)
-        .max_size(config.database.pool_size)
-        .build()?;
+    let recycling = if config.database.prepared_statements {
+        deadpool_postgres::RecyclingMethod::Fast
+    } else {
+        deadpool_postgres::RecyclingMethod::Clean
+    };
+    let mgr_config = deadpool_postgres::ManagerConfig { recycling_method: recycling };
+
+    #[cfg(feature = "tls")]
+    let pool = {
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::from_iter(
+                webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+            ))
+            .with_no_client_auth();
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+        let mgr = deadpool_postgres::Manager::from_config(pg_config, tls, mgr_config);
+        deadpool_postgres::Pool::builder(mgr)
+            .max_size(config.database.pool_size)
+            .build()?
+    };
+
+    #[cfg(not(feature = "tls"))]
+    let pool = {
+        let mgr = deadpool_postgres::Manager::from_config(
+            pg_config,
+            tokio_postgres::NoTls,
+            mgr_config,
+        );
+        deadpool_postgres::Pool::builder(mgr)
+            .max_size(config.database.pool_size)
+            .build()?
+    };
 
     // 4. Build initial schema cache.
     tracing::info!("Loading schema cache…");

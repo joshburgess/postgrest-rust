@@ -6,9 +6,9 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use pg_query_engine::{
-    build_sql, parse_filter, parse_order, parse_select, ApiRequest, ConflictAction, CountOption,
-    DeleteRequest, Filter, FunctionCall, InsertRequest, ReadRequest, SelectItem, SqlOutput,
-    UpdateRequest,
+    build_count_sql, build_sql, parse_filter, parse_order, parse_select, ApiRequest,
+    ConflictAction, CountOption, DeleteRequest, Filter, FunctionCall, InsertRequest, ReadRequest,
+    SelectItem, SqlOutput, UpdateRequest,
 };
 use pg_schema_cache::{ReturnType, SchemaCache};
 
@@ -148,6 +148,62 @@ async fn execute_with_role(
     Ok(json)
 }
 
+/// Execute a data query and an optional count query in the same transaction.
+async fn execute_with_count(
+    pool: &deadpool_postgres::Pool,
+    claims: &Option<JwtClaims>,
+    anon_role: &str,
+    sql: &SqlOutput,
+    count_sql: Option<&SqlOutput>,
+) -> Result<(Option<String>, Option<i64>), ApiError> {
+    let mut client = pool.get().await?;
+    let txn = client.transaction().await?;
+
+    let role = claims
+        .as_ref()
+        .map(|c| c.role.as_str())
+        .unwrap_or(anon_role);
+
+    let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
+    txn.batch_execute(&format!("SET LOCAL ROLE {quoted_role}"))
+        .await?;
+
+    if let Some(claims) = claims {
+        txn.execute(
+            "SELECT set_config('request.jwt.claims', $1, true)",
+            &[&claims.raw],
+        )
+        .await?;
+    }
+
+    // Data query.
+    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
+        .params
+        .iter()
+        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+        .collect();
+    let rows = txn.query(&sql.sql, &param_refs).await?;
+    let json: Option<String> = rows
+        .first()
+        .and_then(|r| r.try_get::<_, String>(0).ok());
+
+    // Count query (if requested).
+    let total = if let Some(csql) = count_sql {
+        let cp: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = csql
+            .params
+            .iter()
+            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+            .collect();
+        let crow = txn.query_one(&csql.sql, &cp).await?;
+        Some(crow.get::<_, i64>(0))
+    } else {
+        None
+    };
+
+    txn.commit().await?;
+    Ok((json, total))
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -185,29 +241,70 @@ pub async fn handle_read(
         .and_then(|o| o.parse().ok())
         .or(range_offset);
 
-    let req = ApiRequest::Read(ReadRequest {
+    let prefs = parse_prefer(&headers);
+
+    let read_req = ReadRequest {
         table: table_qn,
         select,
         filters,
         order,
         limit,
         offset,
-        count: CountOption::None,
-    });
+        count: prefs.count,
+    };
 
-    let sql = build_sql(&cache, &req, schemas)?;
-    let json = execute_with_role(
+    let sql = build_sql(&cache, &ApiRequest::Read(read_req.clone()), schemas)?;
+
+    let count_sql = if prefs.count == CountOption::Exact {
+        Some(build_count_sql(&cache, &read_req, schemas)?)
+    } else {
+        None
+    };
+
+    let (json, total) = execute_with_count(
         &state.pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
+        count_sql.as_ref(),
     )
     .await?;
 
+    let body = json.unwrap_or_else(|| "[]".to_string());
+
+    // Build Content-Range header.
+    let content_range = if let Some(total) = total {
+        let off = offset.unwrap_or(0);
+        // Count how many rows in the JSON array (cheap parse of top-level array length).
+        let row_count = count_json_array(&body);
+        if row_count == 0 {
+            format!("*/{total}")
+        } else {
+            format!("{}-{}/{total}", off, off + row_count as i64 - 1)
+        }
+    } else {
+        "*/*".to_string()
+    };
+
+    // Content negotiation: CSV or JSON.
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json");
+
+    let (content_type, response_body) = if accept.contains("text/csv") {
+        ("text/csv", json_array_to_csv(&body))
+    } else {
+        ("application/json", body)
+    };
+
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        json.unwrap_or_else(|| "[]".to_string()),
+        [
+            (header::CONTENT_TYPE.as_str(), content_type),
+            ("content-range", &content_range),
+        ],
+        response_body,
     )
         .into_response())
 }
@@ -508,6 +605,42 @@ pub async fn handle_ready(State(state): State<Arc<AppState>>) -> StatusCode {
     }
 }
 
+/// Prometheus-compatible metrics endpoint.
+pub async fn handle_metrics(State(state): State<Arc<AppState>>) -> Response {
+    let pool_status = state.pool.status();
+    let cache = state.schema_cache.borrow();
+
+    let body = format!(
+        "# HELP pg_rest_pool_size Current pool size\n\
+         # TYPE pg_rest_pool_size gauge\n\
+         pg_rest_pool_size {}\n\
+         # HELP pg_rest_pool_available Available connections in pool\n\
+         # TYPE pg_rest_pool_available gauge\n\
+         pg_rest_pool_available {}\n\
+         # HELP pg_rest_pool_max_size Maximum pool size\n\
+         # TYPE pg_rest_pool_max_size gauge\n\
+         pg_rest_pool_max_size {}\n\
+         # HELP pg_rest_schema_tables Number of tables in schema cache\n\
+         # TYPE pg_rest_schema_tables gauge\n\
+         pg_rest_schema_tables {}\n\
+         # HELP pg_rest_schema_functions Number of functions in schema cache\n\
+         # TYPE pg_rest_schema_functions gauge\n\
+         pg_rest_schema_functions {}\n",
+        pool_status.size,
+        pool_status.available,
+        pool_status.max_size,
+        cache.tables.len(),
+        cache.functions.len(),
+    );
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        body,
+    )
+        .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -530,4 +663,68 @@ fn body_to_rows(
             "expected JSON object or array".into(),
         )),
     }
+}
+
+/// Convert a JSON array of objects to CSV format.
+fn json_array_to_csv(json_str: &str) -> String {
+    let arr: Vec<serde_json::Map<String, serde_json::Value>> =
+        match serde_json::from_str(json_str) {
+            Ok(a) => a,
+            Err(_) => return String::new(),
+        };
+
+    if arr.is_empty() {
+        return String::new();
+    }
+
+    // Collect all column names from the first row (preserving order).
+    let columns: Vec<&String> = arr[0].keys().collect();
+
+    let mut out = String::new();
+
+    // Header row.
+    for (i, col) in columns.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&csv_escape(col));
+    }
+    out.push('\n');
+
+    // Data rows.
+    for row in &arr {
+        for (i, col) in columns.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            match row.get(*col) {
+                Some(serde_json::Value::Null) | None => {}
+                Some(serde_json::Value::String(s)) => out.push_str(&csv_escape(s)),
+                Some(v) => out.push_str(&v.to_string()),
+            }
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Quickly count top-level elements of a JSON array string without full parsing.
+fn count_json_array(s: &str) -> usize {
+    let trimmed = s.trim();
+    if trimmed == "[]" {
+        return 0;
+    }
+    serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0)
 }

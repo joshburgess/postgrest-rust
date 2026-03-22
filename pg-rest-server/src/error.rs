@@ -67,10 +67,36 @@ impl IntoResponse for ApiError {
             Self::Pool(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
         };
 
-        let body = serde_json::json!({
-            "message": message,
-            "code": status.as_u16(),
-        });
+        // PostgREST-compatible error format.
+        let body = if let Self::Database(e) = &self {
+            if let Some(db_err) = e.as_db_error() {
+                serde_json::json!({
+                    "code": db_err.code().code(),
+                    "message": db_err.message(),
+                    "details": db_err.detail(),
+                    "hint": db_err.hint(),
+                })
+            } else {
+                serde_json::json!({
+                    "code": status.as_str(),
+                    "message": message,
+                })
+            }
+        } else {
+            let code = match &self {
+                Self::TableNotFound(_) | Self::FunctionNotFound(_) => "PGRST200",
+                Self::MethodNotAllowed => "PGRST105",
+                Self::Unauthorized(_) => "PGRST301",
+                Self::BadRequest(_) | Self::Parse(_) => "PGRST100",
+                Self::QueryEngine(_) => "PGRST100",
+                Self::Pool(_) => "PGRST003",
+                Self::Database(_) => unreachable!(),
+            };
+            serde_json::json!({
+                "code": code,
+                "message": message,
+            })
+        };
 
         (
             status,

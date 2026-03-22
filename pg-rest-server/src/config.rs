@@ -17,6 +17,10 @@ pub struct DatabaseConfig {
     pub anon_role: String,
     #[serde(default = "default_pool_size")]
     pub pool_size: usize,
+    /// Set to false for PgBouncer transaction-mode compatibility.
+    /// Disables connection recycling checks that rely on prepared statements.
+    #[serde(default = "default_true")]
+    pub prepared_statements: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +53,9 @@ fn default_port() -> u16 {
 }
 fn default_pool_size() -> usize {
     10
+}
+fn default_true() -> bool {
+    true
 }
 
 impl AppConfig {

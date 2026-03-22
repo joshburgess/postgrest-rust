@@ -18,6 +18,9 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 # Database
 tokio-postgres = "0.7"
 deadpool-postgres = "0.14"
+tokio-postgres-rustls = { version = "0.12", optional = true }
+rustls = { version = "0.23", optional = true }
+webpki-roots = { version = "0.26", optional = true }
 
 # JWT
 jsonwebtoken = "9"
@@ -33,6 +36,10 @@ clap = { version = "4", features = ["derive"] }
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = []
+tls = ["tokio-postgres-rustls", "rustls", "webpki-roots"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

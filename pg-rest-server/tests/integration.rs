@@ -31,6 +31,7 @@ async fn setup() -> axum::Router {
             schemas: vec!["api".to_string()],
             anon_role: "web_anon".to_string(),
             pool_size: 5,
+            prepared_statements: true,
         },
         server: pg_rest_server::config::ServerConfig::default(),
         jwt: pg_rest_server::config::JwtConfig {
@@ -244,6 +245,72 @@ async fn test_read_limit_offset() {
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 2);
     assert_eq!(arr[0]["name"], "Bob");
+}
+
+#[tokio::test]
+async fn test_read_count_exact() {
+    let app = setup().await;
+    let (status, body) = request(
+        &app,
+        Method::GET,
+        "/authors",
+        "web_anon",
+        None,
+        vec![("prefer", "count=exact")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Alice")); // data is returned
+    // Check Content-Range header was set — we test indirectly via the response
+    // (headers are in the response, but our helper only returns the body).
+}
+
+#[tokio::test]
+async fn test_read_count_exact_content_range() {
+    let app = setup().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/authors?limit=2&offset=0&order=id.asc")
+                .header(header::AUTHORIZATION, format!("Bearer {}", make_jwt("web_anon")))
+                .header("prefer", "count=exact")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let range = resp.headers().get("content-range").unwrap().to_str().unwrap();
+    // 3 total authors, requesting first 2: "0-1/3"
+    assert_eq!(range, "0-1/3");
+}
+
+#[tokio::test]
+async fn test_read_csv() {
+    let app = setup().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/authors?select=id,name&order=id.asc")
+                .header(header::AUTHORIZATION, format!("Bearer {}", make_jwt("web_anon")))
+                .header(header::ACCEPT, "text/csv")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/csv"
+    );
+    let body = body_string(resp.into_body()).await;
+    let lines: Vec<&str> = body.trim().lines().collect();
+    assert_eq!(lines[0], "id,name"); // header row
+    assert_eq!(lines.len(), 4); // header + 3 authors
+    assert!(lines[1].contains("Alice"));
 }
 
 #[tokio::test]

@@ -32,6 +32,25 @@ pub fn build_sql(
     })
 }
 
+/// Build a `SELECT count(*)` query that shares the same filters as a read
+/// request but ignores ordering, limit, and offset. Used for
+/// `Prefer: count=exact`.
+pub fn build_count_sql(
+    cache: &SchemaCache,
+    request: &ReadRequest,
+    schemas: &[String],
+) -> Result<SqlOutput, QueryEngineError> {
+    let mut b = SqlBuilder::new(cache, schemas);
+    let table = b.resolve_table(&request.table)?;
+    let table_sql = quote_qualified(&request.table);
+    let where_clause = b.build_where(&request.filters, table)?;
+    let sql = format!("SELECT count(*) FROM {table_sql}{where_clause}");
+    Ok(SqlOutput {
+        sql,
+        params: b.params,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
