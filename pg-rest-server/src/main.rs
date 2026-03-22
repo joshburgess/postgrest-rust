@@ -83,18 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache.functions.len()
     );
 
-    // 5. Create watch channel + spawn listener.
+    // 5. Create watch channel.
     let (cache_tx, cache_rx) = watch::channel(Arc::new(cache));
-
-    // The listener needs its own sender. Since watch::Sender is not Clone,
-    // we subscribe a new receiver from the existing tx and let the listener
-    // create its own channel internally. Instead, we just keep the tx for
-    // the reload endpoint and spawn the listener with a clone-compatible ref.
-    //
-    // Actually, start_schema_listener takes ownership of a Sender. For now,
-    // skip the background LISTEN/NOTIFY listener (the POST /reload endpoint
-    // covers manual reloads). We can add auto-reload later with a shared Arc.
-    // The tx is stored in AppState for the reload endpoint.
 
     // 6. Build JWT decoding key.
     let jwt_decoding_key =
@@ -116,15 +106,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         jwt_validation,
     });
 
-    let app = pg_rest_server::build_router(state);
+    let app = pg_rest_server::build_router(state.clone());
 
-    // 8. Start server.
+    // 8. Spawn reconnecting schema listener.
+    tokio::spawn(schema_listener_loop(state));
+
+    // 9. Start server.
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("Listening on {bind_addr}");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    Ok(())
+}
+
+/// Reconnecting LISTEN/NOTIFY schema listener with exponential backoff.
+async fn schema_listener_loop(state: Arc<AppState>) {
+    let mut backoff = std::time::Duration::from_secs(1);
+
+    loop {
+        let uri = &state.config.database.uri;
+        let schemas = &state.config.database.schemas;
+
+        match run_schema_listener(uri, schemas, &state.schema_cache_tx).await {
+            Ok(()) => break, // clean shutdown
+            Err(e) => {
+                tracing::error!("Schema listener error: {e}, retrying in {backoff:?}");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+/// Single attempt at running the LISTEN/NOTIFY listener.
+async fn run_schema_listener(
+    uri: &str,
+    schemas: &[String],
+    tx: &watch::Sender<Arc<pg_schema_cache::SchemaCache>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (client, mut connection) =
+        tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
+
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            match std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                Some(Ok(tokio_postgres::AsyncMessage::Notification(n))) => {
+                    if notify_tx.send(n).is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
+                None => return Ok(()),
+            }
+        }
+        Ok(())
+    });
+
+    let quoted = format!("\"{}\"", "pgrst".replace('"', "\"\""));
+    client
+        .execute(&format!("LISTEN {quoted}"), &[])
+        .await?;
+    tracing::info!("Schema listener connected");
+
+    while let Some(notification) = notify_rx.recv().await {
+        if notification.channel() == "pgrst" {
+            tracing::info!("Schema reload notification received");
+            match pg_schema_cache::build_schema_cache(&client, schemas).await {
+                Ok(cache) => {
+                    tx.send(Arc::new(cache)).ok();
+                    tracing::info!("Schema cache reloaded via NOTIFY");
+                }
+                Err(e) => tracing::error!("Schema reload failed: {e}"),
+            }
+        }
+    }
 
     Ok(())
 }

@@ -9,17 +9,18 @@ use std::sync::Arc;
 
 use axum::routing::{get, post};
 use axum::Router;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use handlers::*;
 use state::AppState;
 
 /// Build the Axum router with all routes and middleware.
-/// Separated from `main` so integration tests can construct the app
-/// without binding a TCP listener.
 pub fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let cors = build_cors(&state.config.server.cors_origins);
+
+    let mut app = Router::new()
         .route("/", get(handle_root))
         .route("/live", get(handle_live))
         .route("/ready", get(handle_ready))
@@ -34,6 +35,32 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .delete(handle_delete),
         )
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        .layer(cors)
+        .layer(RequestBodyLimitLayer::new(state.config.server.body_limit));
+
+    // Rate limiting (requests/sec, 0 = unlimited).
+    // Applied via ConcurrencyLimit as a simpler alternative that's Clone-compatible.
+    if state.config.server.rate_limit > 0 {
+        app = app.layer(tower::limit::ConcurrencyLimitLayer::new(
+            state.config.server.rate_limit as usize,
+        ));
+    }
+
+    app.with_state(state)
+}
+
+fn build_cors(origins: &[String]) -> CorsLayer {
+    if origins.is_empty() || (origins.len() == 1 && origins[0] == "*") {
+        return CorsLayer::permissive();
+    }
+
+    let allowed: Vec<axum::http::HeaderValue> = origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
 }
