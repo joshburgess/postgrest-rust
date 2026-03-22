@@ -260,6 +260,24 @@ async fn execute_with_role(
     anon_role: &str,
     sql: &SqlOutput,
 ) -> Result<Option<String>, ApiError> {
+    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
+        .params
+        .iter()
+        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+        .collect();
+
+    // Fast path: anon requests (no JWT) skip the transaction + SET LOCAL ROLE.
+    // The connection pool's default role is used directly — 1 round trip instead of 4.
+    if claims.is_none() {
+        let client = pool.get().await?;
+        let rows = client.query(&sql.sql, &param_refs).await?;
+        let json: Option<String> = rows
+            .first()
+            .and_then(|r| r.try_get::<_, String>(0).ok());
+        return Ok(json);
+    }
+
+    // Authenticated path: use transaction for SET LOCAL ROLE scoping.
     let mut client = pool.get().await?;
     let txn = client.transaction().await?;
 
@@ -268,12 +286,10 @@ async fn execute_with_role(
         .map(|c| c.role.as_str())
         .unwrap_or(anon_role);
 
-    // SET LOCAL ROLE with identifier quoting.
     let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
     txn.batch_execute(&format!("SET LOCAL ROLE {quoted_role}"))
         .await?;
 
-    // Forward JWT claims as a GUC variable.
     if let Some(claims) = claims {
         txn.execute(
             "SELECT set_config('request.jwt.claims', $1, true)",
@@ -281,13 +297,6 @@ async fn execute_with_role(
         )
         .await?;
     }
-
-    // Execute the query.
-    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
-        .params
-        .iter()
-        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-        .collect();
 
     let rows = txn.query(&sql.sql, &param_refs).await?;
     txn.commit().await?;
@@ -1096,13 +1105,32 @@ fn simple_hash(s: &str) -> u64 {
 }
 
 /// Quickly count top-level elements of a JSON array string without full parsing.
+/// Count top-level elements of a JSON array without full parsing.
+/// Counts commas at depth 1 (inside the outer array brackets).
 fn count_json_array(s: &str) -> usize {
-    let trimmed = s.trim();
-    if trimmed == "[]" {
+    let s = s.trim();
+    if s.len() < 2 || s == "[]" {
         return 0;
     }
-    serde_json::from_str::<serde_json::Value>(trimmed)
-        .ok()
-        .and_then(|v| v.as_array().map(|a| a.len()))
-        .unwrap_or(0)
+    let mut depth = 0i32;
+    let mut count = 1usize; // at least one element if not empty
+    let mut in_string = false;
+    let mut prev = 0u8;
+    for &b in s.as_bytes() {
+        if in_string {
+            if b == b'"' && prev != b'\\' {
+                in_string = false;
+            }
+        } else {
+            match b {
+                b'"' => in_string = true,
+                b'[' | b'{' => depth += 1,
+                b']' | b'}' => depth -= 1,
+                b',' if depth == 1 => count += 1,
+                _ => {}
+            }
+        }
+        prev = b;
+    }
+    count
 }

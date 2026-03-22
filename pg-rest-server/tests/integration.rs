@@ -598,7 +598,26 @@ async fn test_openapi_v2() {
     let (status, spec) = get_json(&app, "/").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(spec["swagger"], "2.0");
+    // Required top-level Swagger 2.0 fields
+    assert!(spec["info"].is_object());
+    assert!(spec["paths"].is_object());
+    assert!(spec["definitions"].is_object());
+    assert!(spec["basePath"].is_string());
+    // Has our tables as definitions
     assert!(spec["definitions"].get("authors").is_some());
+    assert!(spec["definitions"].get("books").is_some());
+    // Has paths for tables
+    assert!(spec["paths"].get("/authors").is_some());
+    assert!(spec["paths"].get("/books").is_some());
+    // Has RPC paths
+    assert!(spec["paths"].get("/rpc/add").is_some());
+    // Table definitions have properties
+    let authors = &spec["definitions"]["authors"];
+    assert_eq!(authors["type"], "object");
+    assert!(authors["properties"].is_object());
+    assert!(authors["properties"]["name"].is_object());
+    // Property types map correctly
+    assert_eq!(authors["properties"]["name"]["type"], "string");
 }
 
 #[tokio::test]
@@ -607,7 +626,25 @@ async fn test_openapi_v3() {
     let (status, spec) = get_json(&app, "/?openapi-version=3").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(spec["openapi"], "3.0.3");
+    // Required top-level OpenAPI 3.0 fields
+    assert!(spec["info"].is_object());
+    assert!(spec["paths"].is_object());
+    assert!(spec["components"].is_object());
+    assert!(spec["components"]["schemas"].is_object());
+    assert!(spec["servers"].is_array());
+    // Has our tables as schemas
     assert!(spec["components"]["schemas"].get("authors").is_some());
+    assert!(spec["components"]["schemas"].get("books").is_some());
+    // Has paths
+    assert!(spec["paths"].get("/authors").is_some());
+    assert!(spec["paths"].get("/rpc/add").is_some());
+    // Schema structure
+    let authors = &spec["components"]["schemas"]["authors"];
+    assert_eq!(authors["type"], "object");
+    assert!(authors["properties"]["name"]["type"].is_string());
+    // POST has requestBody (v3 style, not v2 parameters)
+    let post = &spec["paths"]["/authors"]["post"];
+    assert!(post["requestBody"].is_object());
 }
 
 // ===========================================================================
