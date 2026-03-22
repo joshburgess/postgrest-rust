@@ -12,7 +12,7 @@ pg-query-engine = { path = "../pg-query-engine" }
 tokio = { version = "1", features = ["full"] }
 
 # Web framework + middleware
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
 

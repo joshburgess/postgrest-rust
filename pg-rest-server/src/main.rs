@@ -117,10 +117,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
+        openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),
         config,
         jwt_decoding_key,
         jwt_validation,
     });
+
+    // Build initial OpenAPI cache.
+    {
+        let specs = state.rebuild_openapi_cache();
+        *state.openapi_cache.write().await = specs;
+    }
 
     let app = pg_rest_server::build_router(state.clone());
 

@@ -128,6 +128,8 @@ pub struct Function {
     pub params: Vec<FuncParam>,
     pub return_type: ReturnType,
     pub volatility: Volatility,
+    /// True for procedures (CALL), false for functions (SELECT).
+    pub is_procedure: bool,
     pub comment: Option<String>,
 }
 

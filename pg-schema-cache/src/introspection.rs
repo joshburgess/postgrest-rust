@@ -110,6 +110,7 @@ SELECT
     p.proretset AS returns_set,
     rt.typname::text AS return_type_name,
     obj_description(p.oid)::text AS comment,
+    p.prokind::text AS prokind,
     p.pronargs::int4 AS num_args,
     p.pronargdefaults::int4 AS num_defaults,
     COALESCE(p.proargnames, ARRAY[]::text[]) AS arg_names,
@@ -306,6 +307,7 @@ async fn load_functions(
     for row in &rows {
         let schema_name: String = row.get("schema_name");
         let function_name: String = row.get("function_name");
+        let prokind: String = row.get("prokind");
         let volatility_char: String = row.get("volatility");
         let returns_set: bool = row.get("returns_set");
         let return_type_name: String = row.get("return_type_name");
@@ -361,6 +363,7 @@ async fn load_functions(
                 params,
                 return_type,
                 volatility,
+                is_procedure: prokind == "p",
                 comment: row.get("comment"),
             },
         );

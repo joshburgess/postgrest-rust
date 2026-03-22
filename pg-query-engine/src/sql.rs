@@ -610,6 +610,26 @@ impl<'a> SqlBuilder<'a> {
 
         let func_sql = quote_qualified(&req.function);
 
+        // Procedures use CALL instead of SELECT.
+        if func.is_procedure {
+            let args: Vec<String> = req
+                .params
+                .iter()
+                .map(|(name, val)| {
+                    let text = json_value_to_text(val);
+                    let p = self.add_param(text);
+                    let pg_type = func
+                        .params
+                        .iter()
+                        .find(|fp| fp.name == *name)
+                        .map(|fp| fp.pg_type.as_str());
+                    let cast = cast_param(&p, pg_type);
+                    format!("{} => {cast}", quote_ident(name))
+                })
+                .collect();
+            return Ok(format!("CALL {func_sql}({})", args.join(", ")));
+        }
+
         // Build named arguments: param_name => $N::type
         let args: Vec<String> = req
             .params

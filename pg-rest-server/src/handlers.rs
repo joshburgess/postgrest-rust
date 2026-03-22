@@ -743,19 +743,17 @@ pub async fn handle_root(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let cache: Arc<SchemaCache> = state.schema_cache.borrow().clone();
-
+    let cached = state.openapi_cache.read().await;
     let spec = match params.get("openapi-version").map(String::as_str) {
-        Some("3") | Some("3.0") => crate::openapi::generate_v3(&cache, &state.config),
-        _ => crate::openapi::generate_v2(&cache, &state.config),
+        Some("3") | Some("3.0") => cached.1.clone(),
+        _ => cached.0.clone(),
     };
+    drop(cached);
 
     (
         StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "application/openapi+json"),
-        ],
-        spec.to_string(),
+        [(header::CONTENT_TYPE, "application/openapi+json")],
+        spec,
     )
         .into_response()
 }
@@ -776,6 +774,10 @@ pub async fn handle_reload(
     let tables = cache.tables.len();
     let functions = cache.functions.len();
     state.schema_cache_tx.send(Arc::new(cache)).ok();
+
+    // Rebuild cached OpenAPI specs.
+    let specs = state.rebuild_openapi_cache();
+    *state.openapi_cache.write().await = specs;
 
     tracing::info!("Schema cache reloaded: {tables} tables, {functions} functions");
 
@@ -841,6 +843,91 @@ pub async fn handle_metrics(State(state): State<Arc<AppState>>) -> Response {
         body,
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket NOTIFY forwarding
+// ---------------------------------------------------------------------------
+
+/// GET /ws?channel=my_channel — WebSocket endpoint that forwards PostgreSQL
+/// NOTIFY messages to connected clients as JSON frames.
+pub async fn handle_ws(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Response {
+    let channel = params
+        .get("channel")
+        .cloned()
+        .unwrap_or_else(|| "pgrst".to_string());
+    let uri = state.config.database.uri.clone();
+
+    ws.on_upgrade(move |socket| ws_handler(socket, uri, channel))
+}
+
+async fn ws_handler(
+    mut socket: axum::extract::ws::WebSocket,
+    uri: String,
+    channel: String,
+) {
+    use axum::extract::ws::Message;
+
+    let conn = tokio_postgres::connect(&uri, tokio_postgres::NoTls).await;
+    let (client, mut connection) = match conn {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = socket
+                .send(Message::Text(
+                    serde_json::json!({"error": e.to_string()}).to_string().into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            match std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                Some(Ok(tokio_postgres::AsyncMessage::Notification(n))) => {
+                    if notify_tx.send(n).is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            }
+        }
+    });
+
+    let quoted = format!("\"{}\"", channel.replace('"', "\"\""));
+    if client
+        .execute(&format!("LISTEN {quoted}"), &[])
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            Some(notification) = notify_rx.recv() => {
+                let msg = serde_json::json!({
+                    "channel": notification.channel(),
+                    "payload": notification.payload(),
+                });
+                if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {} // ignore other messages
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

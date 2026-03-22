@@ -26,6 +26,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/ready", get(handle_ready))
         .route("/metrics", get(handle_metrics))
         .route("/reload", post(handle_reload))
+        .route("/ws", get(handle_ws))
         .route("/rpc/{function}", get(handle_rpc).post(handle_rpc))
         .route(
             "/{table}",
