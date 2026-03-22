@@ -80,5 +80,25 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         // ==== RPC with select/order on results ====
         g("/rpc/search_books?query=Rust&select=title&order=title.asc", jwt),
         g("/rpc/authors_below?max_id=10&select=name&order=name.asc", jwt),
+
+        // ==== RPC GET with default params ====
+        g("/rpc/greet", jwt),
+        g("/rpc/multi_defaults", jwt),
+        g("/rpc/multi_defaults?a=5", jwt),
+        g("/rpc/multi_defaults?a=5&b=10", jwt),
+
+        // ==== RPC with specific result count ====
+        post_json("rpc/authors_below 0", "/rpc/authors_below", json!({"max_id": 0}), jwt),
+        post_json("rpc/search_books partial", "/rpc/search_books", json!({"query": "Learn"}), jwt),
+
+        // ==== GET rpc/add variations ====
+        g("/rpc/add?a=1&b=1", jwt),
+        g("/rpc/add?a=-100&b=100", jwt),
+        g("/rpc/add?a=2147483647&b=0", jwt),
+
+        // ==== RPC echo variations ====
+        post_json("rpc/echo spaces", "/rpc/echo", json!({"value": "hello world"}), jwt),
+        post_json("rpc/echo numbers", "/rpc/echo", json!({"value": "12345"}), jwt),
+        g("/rpc/echo?value=with%20spaces", jwt),
     ]
 }

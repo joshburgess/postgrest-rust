@@ -200,6 +200,7 @@ async fn send_request(
         "POST" => client.post(&url),
         "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
+        "OPTIONS" => client.request(reqwest::Method::OPTIONS, &url),
         _ => return Err(format!("unsupported method: {}", tc.method)),
     };
 

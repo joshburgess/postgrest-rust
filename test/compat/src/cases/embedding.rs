@@ -59,10 +59,38 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/authors?select=name,books(title)&name=eq.Carol", jwt),
         g("/tags?select=name,books(title)&name=eq.beginner", jwt),
 
-        // ==== Embed on views (should still work) ====
+        // ==== Embed on views ====
         g_status_only("view with books embed", "/authors_with_books?order=id.asc", jwt),
 
         // ==== Deep nesting (3 levels) ====
         g("/authors?select=name,books(title,book_tags(tag_id))&name=eq.Alice", jwt),
+
+        // ==== O2M with limit on parent ====
+        g("/authors?select=name,books(title)&order=id.asc&limit=2", jwt),
+        g("/authors?select=name,books(title)&order=id.asc&limit=1&offset=1", jwt),
+
+        // ==== M2O embed on all books ====
+        g("/books?select=id,title,authors(id,name)&order=id.asc", jwt),
+
+        // ==== M2M through book_tags ====
+        g("/tags?select=id,name,books(title)&order=id.asc", jwt),
+
+        // ==== Embed with * select on parent ====
+        g("/books?select=*,authors(name)&id=eq.1", jwt),
+        g("/authors?select=*,books(title)&id=eq.1", jwt),
+
+        // ==== Multiple embeds on same table ====
+        g("/books?select=title,authors(name),tags(name)&id=eq.1", jwt),
+        g("/books?select=title,authors(name),tags(name)&id=eq.3", jwt),
+
+        // ==== !inner with no matching children ====
+        // Carol has no books, so she should be excluded
+        g("/authors?select=name,books!inner(title)&id=in.(1,2,3)&order=id.asc", jwt),
+
+        // ==== Spread on specific columns ====
+        g("/books?select=id,...authors(name)&order=id.asc", jwt),
+
+        // ==== Embed with parent filter resulting in empty ====
+        g("/authors?select=name,books(title)&name=eq.Nobody", jwt),
     ]
 }

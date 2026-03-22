@@ -7,6 +7,9 @@ pub mod logic_filters;
 pub mod json_ops;
 pub mod singular;
 pub mod auth;
+pub mod explain;
+pub mod cors;
+pub mod edge_cases;
 
 use crate::TestCase;
 use serde_json::Value;
@@ -22,6 +25,9 @@ pub fn all_cases(jwt_anon: &str, jwt_user: &str) -> Vec<TestCase> {
     cases.extend(json_ops::cases(jwt_anon));
     cases.extend(singular::cases(jwt_anon));
     cases.extend(auth::cases(jwt_anon, jwt_user));
+    cases.extend(explain::cases(jwt_anon));
+    cases.extend(cors::cases(jwt_anon));
+    cases.extend(edge_cases::cases(jwt_anon, jwt_user));
     cases
 }
 
@@ -48,6 +54,20 @@ pub fn g_sorted(name: &'static str, path: &'static str, auth: &str) -> TestCase 
         compare_body: true,
         sort_array: true,
         skip_status: false,
+    }
+}
+
+/// Test that both servers respond without connection error (skip status + body comparison).
+pub fn g_skip_all(name: &'static str, path: &'static str, auth: &str) -> TestCase {
+    TestCase {
+        name,
+        method: "GET",
+        path,
+        body: None,
+        headers: vec![("Authorization", format!("Bearer {auth}"))],
+        compare_body: false,
+        sort_array: false,
+        skip_status: true,
     }
 }
 

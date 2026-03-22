@@ -173,10 +173,45 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/entities?arr=ov.{a}&order=id.asc", jwt),
         g("/entities?arr=ov.{d,e}&order=id.asc", jwt),
 
-        // ==== Views ====
+        // ==== Three-way AND ====
+        g("/items?active=eq.true&price=gt.5&price=lt.25&order=id.asc", jwt),
+        g("/books?author_id=eq.1&pages=gt.300&pages=lt.600&order=id.asc", jwt),
+        g("/types_test?int_col=gt.0&bool_col=eq.true&text_col=neq.world", jwt),
+
+        // ==== not.in with multiple values ====
+        g("/authors?id=not.in.(1)&order=id.asc", jwt),
+        g("/books?id=not.in.(1,2)&order=id.asc", jwt),
+        g("/employees?id=not.in.(1,2,3)&order=id.asc", jwt),
+
+        // ==== neq with various types ====
+        g("/settings?key=neq.theme&order=key.asc", jwt),
+        g("/compound_pk?k1=neq.1&order=k1.asc,k2.asc", jwt),
+        g("/types_test?date_col=neq.2024-01-01&order=id.asc", jwt),
+
+        // ==== gte/lte boundaries ====
+        g("/numbered?val=gte.1&val=lte.1&order=id.asc", jwt),
+        g("/numbered?val=gte.100&val=lte.100&order=id.asc", jwt),
+        g("/books?pages=gte.350&pages=lte.350&order=id.asc", jwt),
+
+        // ==== like with no wildcards (exact match) ====
+        g("/authors?name=like.Alice&order=id.asc", jwt),
+        g("/books?title=ilike.learning rust&order=id.asc", jwt),
+
+        // ==== in with single value ====
+        g("/authors?id=in.(1)&order=id.asc", jwt),
+        g("/authors?name=in.(Alice)&order=id.asc", jwt),
+
+        // ==== Filtering on nullable FK columns ====
+        g("/books?author_id=eq.1&order=id.asc", jwt),
+        g("/books?author_id=eq.2&order=id.asc", jwt),
+        g("/tasks?assigned_to=is.null&order=id.asc", jwt),
+        g("/tasks?created_by=eq.1&order=id.asc", jwt),
+
+        // ==== More views ====
         g("/authors_with_books?order=id.asc", jwt),
         g("/simple_items?order=id.asc", jwt),
         g("/authors_with_books?book_count=gt.0&order=id.asc", jwt),
+        g("/authors_with_books?book_count=eq.0&order=id.asc", jwt),
 
         // ==== Unicode / special characters in values ====
         g("/unicode_test?name=eq.café", jwt),
