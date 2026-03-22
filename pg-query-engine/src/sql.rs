@@ -134,6 +134,9 @@ impl<'a> SqlBuilder<'a> {
                 SelectItem::Column(name) => {
                     parts.push(quote_ident(name));
                 }
+                SelectItem::Cast { column, pg_type } => {
+                    parts.push(format!("{}::{}", quote_ident(column), pg_type));
+                }
                 SelectItem::Star => {
                     parts.push("*".to_string());
                 }
@@ -504,6 +507,9 @@ impl<'a> SqlBuilder<'a> {
                     .iter()
                     .filter_map(|item| match item {
                         SelectItem::Column(c) => Some(quote_ident(c)),
+                        SelectItem::Cast { column, pg_type } => {
+                            Some(format!("{}::{}", quote_ident(column), pg_type))
+                        }
                         SelectItem::Star => Some("*".to_string()),
                         _ => None,
                     })
@@ -561,26 +567,74 @@ impl<'a> SqlBuilder<'a> {
 
     fn build_where(
         &mut self,
-        filters: &[Filter],
+        filters: &FilterNode,
         table: &Table,
     ) -> Result<String, QueryEngineError> {
-        let conditions = self.build_where_conditions(filters, table)?;
-        if conditions.is_empty() {
+        if filters.is_empty() {
+            return Ok(String::new());
+        }
+        let condition = self.build_filter_node(filters, table)?;
+        if condition.is_empty() {
             Ok(String::new())
         } else {
-            Ok(format!(" WHERE {}", conditions.join(" AND ")))
+            Ok(format!(" WHERE {condition}"))
         }
     }
 
+    /// Returns filter conditions as a Vec of SQL strings (for combining
+    /// with JOIN conditions in embedding subqueries).
     fn build_where_conditions(
         &mut self,
-        filters: &[Filter],
+        filters: &FilterNode,
         table: &Table,
     ) -> Result<Vec<String>, QueryEngineError> {
-        filters
-            .iter()
-            .map(|f| self.build_filter(f, table))
-            .collect()
+        if filters.is_empty() {
+            return Ok(Vec::new());
+        }
+        let condition = self.build_filter_node(filters, table)?;
+        if condition.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![condition])
+        }
+    }
+
+    fn build_filter_node(
+        &mut self,
+        node: &FilterNode,
+        table: &Table,
+    ) -> Result<String, QueryEngineError> {
+        match node {
+            FilterNode::And(children) => {
+                let parts: Vec<String> = children
+                    .iter()
+                    .map(|c| self.build_filter_node(c, table))
+                    .collect::<Result<_, _>>()?;
+                let parts: Vec<&str> = parts.iter().filter(|s| !s.is_empty()).map(|s| s.as_str()).collect();
+                match parts.len() {
+                    0 => Ok(String::new()),
+                    1 => Ok(parts[0].to_string()),
+                    _ => Ok(format!("({})", parts.join(" AND "))),
+                }
+            }
+            FilterNode::Or(children) => {
+                let parts: Vec<String> = children
+                    .iter()
+                    .map(|c| self.build_filter_node(c, table))
+                    .collect::<Result<_, _>>()?;
+                let parts: Vec<&str> = parts.iter().filter(|s| !s.is_empty()).map(|s| s.as_str()).collect();
+                match parts.len() {
+                    0 => Ok(String::new()),
+                    1 => Ok(parts[0].to_string()),
+                    _ => Ok(format!("({})", parts.join(" OR "))),
+                }
+            }
+            FilterNode::Not(child) => {
+                let inner = self.build_filter_node(child, table)?;
+                Ok(format!("NOT ({inner})"))
+            }
+            FilterNode::Condition(filter) => self.build_filter(filter, table),
+        }
     }
 
     fn build_filter(
@@ -908,12 +962,12 @@ mod tests {
                 SelectItem::Column("id".into()),
                 SelectItem::Column("name".into()),
             ],
-            filters: vec![Filter {
+            filters: FilterNode::from_filters(vec![Filter {
                 column: "age".into(),
                 operator: FilterOp::Gt,
                 value: FilterValue::Value("18".into()),
                 negated: false,
-            }],
+            }]),
             order: vec![OrderClause {
                 column: "name".into(),
                 direction: OrderDirection::Asc,
@@ -960,12 +1014,12 @@ mod tests {
         let cache = test_cache();
         let req = ApiRequest::Delete(DeleteRequest {
             table: QualifiedName::new("api", "users"),
-            filters: vec![Filter {
+            filters: FilterNode::from_filters(vec![Filter {
                 column: "id".into(),
                 operator: FilterOp::Eq,
                 value: FilterValue::Value("42".into()),
                 negated: false,
-            }],
+            }]),
             returning: vec!["*".into()],
         });
 

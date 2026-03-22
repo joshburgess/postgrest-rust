@@ -6,9 +6,9 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use pg_query_engine::{
-    build_count_sql, build_sql, parse_filter, parse_order, parse_select, ApiRequest,
-    ConflictAction, CountOption, DeleteRequest, Filter, FunctionCall, InsertRequest, ReadRequest,
-    SelectItem, SqlOutput, UpdateRequest,
+    build_count_sql, build_sql, parse_filter, parse_logic_filter, parse_order, parse_select,
+    ApiRequest, ConflictAction, CountOption, DeleteRequest, FilterNode, FunctionCall,
+    InsertRequest, ReadRequest, SelectItem, SqlOutput, UpdateRequest,
 };
 use pg_schema_cache::{ReturnType, SchemaCache};
 
@@ -26,15 +26,22 @@ const RESERVED_PARAMS: &[&str] = &["select", "order", "limit", "offset"];
 // Prefer header
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReturnPreference {
+    Minimal,
+    HeadersOnly,
+    Representation,
+}
+
 struct Preferences {
-    return_repr: bool,
+    return_pref: ReturnPreference,
     count: CountOption,
     resolution: Option<ConflictAction>,
 }
 
 fn parse_prefer(headers: &HeaderMap) -> Preferences {
     let mut prefs = Preferences {
-        return_repr: false,
+        return_pref: ReturnPreference::Minimal,
         count: CountOption::None,
         resolution: None,
     };
@@ -43,8 +50,9 @@ fn parse_prefer(headers: &HeaderMap) -> Preferences {
         if let Ok(s) = value.to_str() {
             for part in s.split(',') {
                 match part.trim() {
-                    "return=representation" => prefs.return_repr = true,
-                    "return=minimal" => prefs.return_repr = false,
+                    "return=representation" => prefs.return_pref = ReturnPreference::Representation,
+                    "return=headers-only" => prefs.return_pref = ReturnPreference::HeadersOnly,
+                    "return=minimal" => prefs.return_pref = ReturnPreference::Minimal,
                     "count=exact" => prefs.count = CountOption::Exact,
                     "count=planned" => prefs.count = CountOption::Planned,
                     "count=estimated" => prefs.count = CountOption::Estimated,
@@ -91,12 +99,68 @@ fn parse_range(headers: &HeaderMap) -> (Option<i64>, Option<i64>) {
 // Parse filters from query params
 // ---------------------------------------------------------------------------
 
-fn extract_filters(params: &HashMap<String, String>) -> Result<Vec<Filter>, ApiError> {
-    params
-        .iter()
-        .filter(|(k, _)| !RESERVED_PARAMS.contains(&k.as_str()))
-        .map(|(k, v)| parse_filter(k, v).map_err(ApiError::from))
-        .collect()
+fn extract_filters(params: &HashMap<String, String>) -> Result<FilterNode, ApiError> {
+    let mut nodes: Vec<FilterNode> = Vec::new();
+
+    for (key, value) in params {
+        match key.as_str() {
+            "or" | "and" => {
+                nodes.push(parse_logic_filter(key, value).map_err(ApiError::from)?);
+            }
+            k if RESERVED_PARAMS.contains(&k) => continue,
+            column => {
+                nodes.push(FilterNode::Condition(
+                    parse_filter(column, value).map_err(ApiError::from)?,
+                ));
+            }
+        }
+    }
+
+    Ok(FilterNode::And(nodes))
+}
+
+/// Parse the `Accept-Profile` header to select a specific schema.
+fn resolve_schemas<'a>(
+    headers: &HeaderMap,
+    config_schemas: &'a [String],
+) -> Result<&'a [String], ApiError> {
+    if let Some(profile) = headers.get("accept-profile").and_then(|v| v.to_str().ok()) {
+        if config_schemas.iter().any(|s| s == profile) {
+            // The caller uses the full list but searches this schema first.
+            // For simplicity, we just validate the schema exists.
+            Ok(config_schemas)
+        } else {
+            Err(ApiError::BadRequest(format!(
+                "schema '{profile}' is not in the configured search path"
+            )))
+        }
+    } else {
+        Ok(config_schemas)
+    }
+}
+
+/// Check if the Accept header requests a singular (single-object) response.
+fn wants_singular(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/vnd.pgrst.object+json"))
+        .unwrap_or(false)
+}
+
+/// Unwrap a JSON array to a single object for singular responses.
+fn to_singular(json_body: &str) -> Result<String, ApiError> {
+    let arr: Vec<serde_json::Value> = serde_json::from_str(json_body)
+        .map_err(|_| ApiError::NotAcceptable("invalid JSON array".into()))?;
+    match arr.len() {
+        0 => Err(ApiError::NotAcceptable(
+            "no rows returned for singular response".into(),
+        )),
+        1 => Ok(arr.into_iter().next().unwrap().to_string()),
+        n => Err(ApiError::NotAcceptable(format!(
+            "expected single row but got {n} rows"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +280,7 @@ pub async fn handle_read(
 ) -> Result<Response, ApiError> {
     let claims = extract_jwt_claims(&headers, &state)?;
     let cache: Arc<SchemaCache> = state.schema_cache.borrow().clone();
-    let schemas = &state.config.database.schemas;
+    let schemas = resolve_schemas(&headers, &state.config.database.schemas)?;
 
     let table_meta = cache
         .find_table(&table, schemas)
@@ -242,6 +306,7 @@ pub async fn handle_read(
         .or(range_offset);
 
     let prefs = parse_prefer(&headers);
+    let singular = wants_singular(&headers);
 
     let read_req = ReadRequest {
         table: table_qn,
@@ -275,7 +340,6 @@ pub async fn handle_read(
     // Build Content-Range header.
     let content_range = if let Some(total) = total {
         let off = offset.unwrap_or(0);
-        // Count how many rows in the JSON array (cheap parse of top-level array length).
         let row_count = count_json_array(&body);
         if row_count == 0 {
             format!("*/{total}")
@@ -285,6 +349,20 @@ pub async fn handle_read(
     } else {
         "*/*".to_string()
     };
+
+    // Singular response (application/vnd.pgrst.object+json).
+    if singular {
+        let obj = to_singular(&body)?;
+        return Ok((
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE.as_str(), "application/vnd.pgrst.object+json"),
+                ("content-range", &content_range),
+            ],
+            obj,
+        )
+            .into_response());
+    }
 
     // Content negotiation: CSV or JSON.
     let accept = headers
@@ -312,7 +390,7 @@ pub async fn handle_read(
 pub async fn handle_insert(
     State(state): State<Arc<AppState>>,
     Path(table): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(_params): Query<HashMap<String, String>>,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Response, ApiError> {
@@ -330,16 +408,11 @@ pub async fn handle_insert(
     let table_qn = table_meta.name.clone();
 
     let rows = body_to_rows(body)?;
-    let returning = if prefs.return_repr {
+    let returning = if prefs.return_pref == ReturnPreference::Representation {
         vec!["*".to_string()]
     } else {
         Vec::new()
     };
-
-    let select = parse_select(
-        params.get("select").map(String::as_str).unwrap_or("*"),
-    )?;
-    let _ = select; // TODO: use for column filtering on RETURNING
 
     let req = ApiRequest::Insert(InsertRequest {
         table: table_qn,
@@ -357,14 +430,14 @@ pub async fn handle_insert(
     )
     .await?;
 
-    match json {
-        Some(j) => Ok((
+    match (prefs.return_pref, json) {
+        (ReturnPreference::Representation, Some(j)) => Ok((
             StatusCode::CREATED,
             [(header::CONTENT_TYPE, "application/json")],
             j,
         )
             .into_response()),
-        None => Ok(StatusCode::CREATED.into_response()),
+        _ => Ok(StatusCode::CREATED.into_response()),
     }
 }
 
@@ -394,7 +467,7 @@ pub async fn handle_update(
     };
 
     let filters = extract_filters(&params)?;
-    let returning = if prefs.return_repr {
+    let returning = if prefs.return_pref == ReturnPreference::Representation {
         vec!["*".to_string()]
     } else {
         Vec::new()
@@ -447,7 +520,7 @@ pub async fn handle_delete(
     let table_qn = table_meta.name.clone();
 
     let filters = extract_filters(&params)?;
-    let returning = if prefs.return_repr {
+    let returning = if prefs.return_pref == ReturnPreference::Representation {
         vec!["*".to_string()]
     } else {
         Vec::new()
@@ -528,7 +601,7 @@ pub async fn handle_rpc(
         Some(ReadRequest {
             table: func_qn.clone(),
             select,
-            filters: Vec::new(),
+            filters: FilterNode::empty(),
             order,
             limit: None,
             offset: None,

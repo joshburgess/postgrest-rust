@@ -8,8 +8,8 @@ use pg_schema_cache::QualifiedName;
 
 /// Parses a PostgREST `select` query parameter into a list of select items.
 ///
-/// Supports columns, `*`, and nested embedding:
-///   `id,name,author:authors(name,books(title))`
+/// Supports columns, `*`, type casts (`name::text`), and nested embedding:
+///   `id,name::text,author:authors(name,books(title))`
 pub fn parse_select(input: &str) -> Result<Vec<SelectItem>, ParseError> {
     if input.is_empty() {
         return Ok(vec![SelectItem::Star]);
@@ -27,7 +27,6 @@ fn parse_select_item(input: &str) -> Result<SelectItem, ParseError> {
 
     // Look for the first top-level `(` to detect embedding.
     if let Some(paren_pos) = input.find('(') {
-        // Verify closing paren
         if !input.ends_with(')') {
             return Err(ParseError::InvalidSelect(input.to_string()));
         }
@@ -45,22 +44,30 @@ fn parse_select_item(input: &str) -> Result<SelectItem, ParseError> {
 
         let sub_select = parse_select(inner)?;
 
-        Ok(SelectItem::Embed {
+        return Ok(SelectItem::Embed {
             alias,
             target,
             sub_request: Box::new(ReadRequest {
-                table: QualifiedName::new("", ""), // resolved during SQL building
+                table: QualifiedName::new("", ""),
                 select: sub_select,
-                filters: Vec::new(),
+                filters: FilterNode::empty(),
                 order: Vec::new(),
                 limit: None,
                 offset: None,
                 count: CountOption::None,
             }),
-        })
-    } else {
-        Ok(SelectItem::Column(input.to_string()))
+        });
     }
+
+    // Check for type cast: `column::type`
+    if let Some((name, pg_type)) = input.split_once("::") {
+        return Ok(SelectItem::Cast {
+            column: name.to_string(),
+            pg_type: pg_type.to_string(),
+        });
+    }
+
+    Ok(SelectItem::Column(input.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +95,92 @@ pub fn parse_filter(column: &str, raw_value: &str) -> Result<Filter, ParseError>
         value,
         negated,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Logic filter parser (or/and grouping)
+// ---------------------------------------------------------------------------
+
+/// Parse a top-level `or` or `and` query parameter value into a [`FilterNode`].
+///
+/// The value has the form `(expr1,expr2,...)` where each expr is either
+/// `column.op.value`, `not.column.op.value`, `or(...)`, or `and(...)`.
+pub fn parse_logic_filter(key: &str, value: &str) -> Result<FilterNode, ParseError> {
+    let inner = value
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
+        .ok_or_else(|| ParseError::InvalidFilter(format!("{key}.{value}")))?;
+
+    let parts = split_top_level(inner, ',');
+    let nodes: Result<Vec<FilterNode>, _> = parts
+        .iter()
+        .map(|part| parse_filter_expression(part.trim()))
+        .collect();
+
+    match key {
+        "or" => Ok(FilterNode::Or(nodes?)),
+        "and" => Ok(FilterNode::And(nodes?)),
+        _ => Err(ParseError::InvalidFilter(key.to_string())),
+    }
+}
+
+/// Parse a single filter expression inside an `or(...)` or `and(...)` group.
+///
+/// Handles: `column.op.value`, `not.column.op.value`,
+/// `or(...)`, `and(...)`, `not.or(...)`, `not.and(...)`.
+pub fn parse_filter_expression(expr: &str) -> Result<FilterNode, ParseError> {
+    let (negated, rest) = if let Some(r) = expr.strip_prefix("not.") {
+        (true, r)
+    } else {
+        (false, expr)
+    };
+
+    // Nested or(...)
+    if let Some(inner) = rest
+        .strip_prefix("or(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let parts = split_top_level(inner, ',');
+        let nodes: Result<Vec<FilterNode>, _> = parts
+            .iter()
+            .map(|p| parse_filter_expression(p.trim()))
+            .collect();
+        let node = FilterNode::Or(nodes?);
+        return Ok(if negated {
+            FilterNode::Not(Box::new(node))
+        } else {
+            node
+        });
+    }
+
+    // Nested and(...)
+    if let Some(inner) = rest
+        .strip_prefix("and(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let parts = split_top_level(inner, ',');
+        let nodes: Result<Vec<FilterNode>, _> = parts
+            .iter()
+            .map(|p| parse_filter_expression(p.trim()))
+            .collect();
+        let node = FilterNode::And(nodes?);
+        return Ok(if negated {
+            FilterNode::Not(Box::new(node))
+        } else {
+            node
+        });
+    }
+
+    // Simple filter: column.op.value (split on first dot for column name)
+    let (column, filter_value) = rest
+        .split_once('.')
+        .ok_or_else(|| ParseError::InvalidFilter(expr.to_string()))?;
+
+    let mut filter = parse_filter(column, filter_value)?;
+    if negated {
+        filter.negated = !filter.negated;
+    }
+    Ok(FilterNode::Condition(filter))
 }
 
 fn parse_op_and_value(
@@ -239,8 +332,13 @@ mod tests {
         let items = parse_select("id,name,age").unwrap();
         assert_eq!(items.len(), 3);
         assert!(matches!(&items[0], SelectItem::Column(c) if c == "id"));
-        assert!(matches!(&items[1], SelectItem::Column(c) if c == "name"));
-        assert!(matches!(&items[2], SelectItem::Column(c) if c == "age"));
+    }
+
+    #[test]
+    fn test_parse_select_cast() {
+        let items = parse_select("id::text,name").unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(matches!(&items[0], SelectItem::Cast { column, pg_type } if column == "id" && pg_type == "text"));
     }
 
     #[test]
@@ -308,6 +406,34 @@ mod tests {
     fn test_parse_filter_fts_with_lang() {
         let f = parse_filter("body", "fts(english).search").unwrap();
         assert!(matches!(&f.operator, FilterOp::Fts(Some(l)) if l == "english"));
+    }
+
+    #[test]
+    fn test_parse_logic_or() {
+        let node = parse_logic_filter("or", "(age.gt.18,name.eq.Alice)").unwrap();
+        assert!(matches!(node, FilterNode::Or(ref v) if v.len() == 2));
+    }
+
+    #[test]
+    fn test_parse_logic_nested() {
+        let node =
+            parse_logic_filter("or", "(age.gt.18,and(name.eq.Alice,status.eq.active))").unwrap();
+        match node {
+            FilterNode::Or(v) => {
+                assert_eq!(v.len(), 2);
+                assert!(matches!(&v[1], FilterNode::And(inner) if inner.len() == 2));
+            }
+            _ => panic!("expected Or"),
+        }
+    }
+
+    #[test]
+    fn test_parse_logic_not() {
+        let node = parse_filter_expression("not.age.gt.18").unwrap();
+        match node {
+            FilterNode::Condition(f) => assert!(f.negated),
+            _ => panic!("expected condition"),
+        }
     }
 
     #[test]

@@ -11,12 +11,14 @@ pub enum ApiError {
     QueryEngine(pg_query_engine::QueryEngineError),
     Parse(pg_query_engine::ParseError),
     Database(tokio_postgres::Error),
+    NotAcceptable(String),
     Pool(deadpool_postgres::PoolError),
 }
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NotAcceptable(m) => write!(f, "not acceptable: {m}"),
             Self::TableNotFound(t) => write!(f, "table or view not found: {t}"),
             Self::FunctionNotFound(t) => write!(f, "function not found: {t}"),
             Self::MethodNotAllowed => write!(f, "method not allowed"),
@@ -42,6 +44,7 @@ impl IntoResponse for ApiError {
             Self::TableNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             Self::FunctionNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             Self::MethodNotAllowed => (StatusCode::METHOD_NOT_ALLOWED, self.to_string()),
+            Self::NotAcceptable(_) => (StatusCode::NOT_ACCEPTABLE, self.to_string()),
             Self::Unauthorized(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::BadRequest(_) | Self::Parse(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             Self::QueryEngine(e) => match e {
@@ -86,6 +89,7 @@ impl IntoResponse for ApiError {
             let code = match &self {
                 Self::TableNotFound(_) | Self::FunctionNotFound(_) => "PGRST200",
                 Self::MethodNotAllowed => "PGRST105",
+                Self::NotAcceptable(_) => "PGRST107",
                 Self::Unauthorized(_) => "PGRST301",
                 Self::BadRequest(_) | Self::Parse(_) => "PGRST100",
                 Self::QueryEngine(_) => "PGRST100",

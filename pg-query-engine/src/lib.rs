@@ -5,5 +5,5 @@ pub mod sql;
 
 pub use ast::*;
 pub use error::{ParseError, QueryEngineError};
-pub use parser::{parse_filter, parse_order, parse_select};
+pub use parser::{parse_filter, parse_filter_expression, parse_logic_filter, parse_order, parse_select};
 pub use sql::{build_count_sql, build_sql, SqlOutput};

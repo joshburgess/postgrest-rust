@@ -600,3 +600,113 @@ async fn test_openapi_v3() {
     assert_eq!(spec["openapi"], "3.0.3");
     assert!(spec["components"]["schemas"].get("authors").is_some());
 }
+
+// ===========================================================================
+// Logical operators (or/and)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_filter_or() {
+    let app = setup().await;
+    let (status, json) =
+        get_json(&app, "/authors?or=(name.eq.Alice,name.eq.Carol)&order=id.asc").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["name"], "Alice");
+    assert_eq!(arr[1]["name"], "Carol");
+}
+
+#[tokio::test]
+async fn test_filter_nested_and_or() {
+    let app = setup().await;
+    // Authors named Alice OR (named Bob AND have a bio)
+    let (status, json) = get_json(
+        &app,
+        "/authors?or=(name.eq.Alice,and(name.eq.Bob,bio.not.is.null))&order=id.asc",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["name"], "Alice");
+    assert_eq!(arr[1]["name"], "Bob");
+}
+
+// ===========================================================================
+// not.is.null
+// ===========================================================================
+
+#[tokio::test]
+async fn test_filter_not_is_null() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?bio=not.is.null&order=id.asc").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    // Alice and Bob have bios, Carol does not.
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["name"], "Alice");
+    assert_eq!(arr[1]["name"], "Bob");
+}
+
+// ===========================================================================
+// Select type cast
+// ===========================================================================
+
+#[tokio::test]
+async fn test_select_cast() {
+    let app = setup().await;
+    let (status, json) = get_json(&app, "/authors?select=id::text,name&id=eq.1").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    // id should be returned as a string due to ::text cast
+    assert_eq!(arr[0]["id"], "1");
+}
+
+// ===========================================================================
+// Singular response
+// ===========================================================================
+
+#[tokio::test]
+async fn test_singular_response() {
+    let app = setup().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/authors?id=eq.1")
+                .header(header::AUTHORIZATION, format!("Bearer {}", make_jwt("web_anon")))
+                .header(header::ACCEPT, "application/vnd.pgrst.object+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    assert!(ct.contains("application/vnd.pgrst.object+json"));
+    let body = body_string(resp.into_body()).await;
+    let obj: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // Should be a single object, not an array.
+    assert!(obj.is_object());
+    assert_eq!(obj["name"], "Alice");
+}
+
+#[tokio::test]
+async fn test_singular_response_406_multiple() {
+    let app = setup().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/authors")
+                .header(header::AUTHORIZATION, format!("Bearer {}", make_jwt("web_anon")))
+                .header(header::ACCEPT, "application/vnd.pgrst.object+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_ACCEPTABLE);
+}
