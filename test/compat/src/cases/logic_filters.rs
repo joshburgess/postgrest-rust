@@ -78,5 +78,8 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
 
         // ==== and with or on items ====
         g("/items?or=(price.lt.5,price.gt.20)&active=eq.true&order=id.asc", jwt),
+
+        // ==== or on profiles with multiple conditions ====
+        g("/profiles?or=(and(age.gt.25,score.gt.80),and(age.is.null,active.eq.true))&order=id.asc", jwt),
     ]
 }

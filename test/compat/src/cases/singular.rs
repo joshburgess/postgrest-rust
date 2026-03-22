@@ -263,5 +263,57 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Prefer", "count=exact".to_string()));
             tc
         },
+
+        // ==== Singular with filter that matches exactly one ====
+        {
+            let mut tc = g("/orders?customer=eq.Dave", jwt);
+            tc.name = "singular Dave order";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/upsert_test?code=eq.BBB", jwt);
+            tc.name = "singular upsert_test";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== Singular 406 on new tables ====
+        {
+            let mut tc = g_status_only("singular 406 employees", "/employees", jwt);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g_status_only("singular 406 entities", "/entities", jwt);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== Count with various filters ====
+        {
+            let mut tc = g("/orders?customer=eq.Alice&order=id.asc", jwt);
+            tc.name = "count Alice orders";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/logs?level=in.(warn,error)&order=id.asc", jwt);
+            tc.name = "count warn+error logs";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/employees?manager_id=eq.1&order=id.asc", jwt);
+            tc.name = "count mgr 1 employees";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/books?author_id=eq.1&order=id.asc", jwt);
+            tc.name = "count author 1 books";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
     ]
 }

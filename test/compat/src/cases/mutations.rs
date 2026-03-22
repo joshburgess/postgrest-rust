@@ -389,5 +389,96 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             None, jwt, vec![minimal.clone()]),
         mut_skip("cleanup2 items", "DELETE", "/items?name=like.compat2*",
             None, jwt, vec![minimal.clone()]),
+
+        // ==== Round 3: more mutation patterns to match PostgREST coverage ====
+
+        // Insert with every column explicit
+        mut_skip("insert order explicit", "POST", "/orders",
+            Some(json!({"customer": "compat3-x", "amount": 77.77, "status": "pending", "notes": "explicit"})),
+            jwt, vec![repr.clone()]),
+
+        // Multi-row with different column sets per row
+        mut_skip("insert logs varied cols", "POST", "/logs",
+            Some(json!([
+                {"level": "info", "message": "compat3-a", "context": {"k": 1}},
+                {"message": "compat3-b"},
+                {"level": "error", "message": "compat3-c"}
+            ])), jwt, vec![repr.clone()]),
+
+        // Update to set all nullable columns to null
+        mut_skip("update order all null", "PATCH", "/orders?customer=eq.compat3-x",
+            Some(json!({"notes": null})), jwt, vec![repr.clone()]),
+
+        // Update with neq filter
+        mut_skip("update orders neq filter", "PATCH", "/orders?customer=eq.compat3-x&status=neq.shipped",
+            Some(json!({"status": "shipped"})), jwt, vec![repr.clone()]),
+
+        // Delete with like filter
+        mut_skip("delete orders like", "DELETE", "/orders?customer=like.compat3*",
+            None, jwt, vec![repr.clone()]),
+
+        // Insert into compound_pk with different values
+        mut_skip("insert compound 77", "POST", "/compound_pk",
+            Some(json!({"k1": 77, "k2": 77, "value": "compat3", "extra": "e3"})),
+            jwt, vec![repr.clone()]),
+
+        // Update compound_pk extra only
+        mutation("update compound 77", "PATCH", "/compound_pk?k1=eq.77&k2=eq.77",
+            Some(json!({"extra": "updated3"})), jwt, vec![repr.clone()]),
+
+        // Delete compound_pk
+        mut_skip("delete compound 77", "DELETE", "/compound_pk?k1=eq.77",
+            None, jwt, vec![repr.clone()]),
+
+        // Insert unicode with various characters
+        mut_skip("insert unicode emoji-safe", "POST", "/unicode_test",
+            Some(json!({"name": "compat3-tëst", "note": "diacritic"})),
+            jwt, vec![repr.clone()]),
+
+        // Upsert settings batch
+        mut_skip("upsert settings batch 3", "POST", "/settings",
+            Some(json!([
+                {"key": "compat3_a", "value": "1"},
+                {"key": "compat3_b", "value": "2"},
+                {"key": "compat3_c", "value": "3"}
+            ])), jwt, vec![merge.clone()]),
+
+        // Update settings batch
+        mut_skip("update settings compat3", "PATCH", "/settings?key=like.compat3*",
+            Some(json!({"value": "updated"})), jwt, vec![repr.clone()]),
+
+        // Insert into types_test with all non-null fields
+        mut_skip("insert types full", "POST", "/types_test",
+            Some(json!({
+                "text_col": "compat3", "int_col": 42, "bigint_col": 420,
+                "float_col": 3.5, "double_col": 2.75, "numeric_col": 99.99,
+                "bool_col": false, "date_col": "2025-12-31",
+                "time_col": "23:59:59",
+                "json_col": {"compat": 3}, "jsonb_col": {"compat": 3},
+                "int_arr": [7,8,9], "text_arr": ["compat","three"]
+            })), jwt, vec![repr.clone()]),
+
+        // Insert into employees chain (self-ref)
+        mut_skip("insert emp chain", "POST", "/employees",
+            Some(json!({"name": "compat3-mgr"})), jwt, vec![repr.clone()]),
+
+        // Insert entity with large array
+        mut_skip("insert entity large arr", "POST", "/entities",
+            Some(json!({"name": "compat3-big", "arr": ["a","b","c","d","e","f","g"], "data": {"big": true}})),
+            jwt, vec![repr.clone()]),
+
+        // Delete everything matching compat3
+        mut_skip("cleanup3 logs", "DELETE", "/logs?message=like.compat3*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup3 unicode", "DELETE", "/unicode_test?name=like.compat3*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup3 settings", "DELETE", "/settings?key=like.compat3*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup3 types", "DELETE", "/types_test?text_col=eq.compat3",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup3 employees", "DELETE", "/employees?name=like.compat3*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup3 entities", "DELETE", "/entities?name=like.compat3*",
+            None, jwt, vec![minimal.clone()]),
     ]
 }

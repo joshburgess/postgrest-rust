@@ -205,5 +205,27 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         post_json("rpc/sum_amounts min1000", "/rpc/sum_amounts", json!({"min_amount": 1000}), jwt),
         g("/rpc/sum_amounts?min_amount=200", jwt),
         g("/rpc/sum_amounts", jwt),
+
+        // ==== More function edge cases ====
+        post_json("rpc/concat_strings empty", "/rpc/concat_strings", json!({"a": "", "b": ""}), jwt),
+        post_json("rpc/concat_strings unicode", "/rpc/concat_strings", json!({"a": "café", "b": "naïve", "sep": " & "}), jwt),
+        g("/rpc/concat_strings?a=hello&b=world&sep=%20", jwt),
+
+        post_json("rpc/clamp equal bounds", "/rpc/clamp", json!({"val": 5, "lo": 5, "hi": 5}), jwt),
+        post_json("rpc/clamp at lo", "/rpc/clamp", json!({"val": 0, "lo": 0, "hi": 10}), jwt),
+        post_json("rpc/clamp at hi", "/rpc/clamp", json!({"val": 10, "lo": 0, "hi": 10}), jwt),
+
+        post_json("rpc/count_by_status all", "/rpc/count_by_status", json!({"s": ""}), jwt),
+        g("/rpc/count_by_status?s=shipped", jwt),
+        g("/rpc/count_by_status?s=pending", jwt),
+
+        post_json("rpc/customer_orders Dave", "/rpc/customer_orders", json!({"cust": "Dave"}), jwt),
+        g("/rpc/customer_orders?cust=Dave&select=customer,amount", jwt),
+        g("/rpc/customer_orders?cust=Alice&select=amount&order=amount.desc", jwt),
+
+        post_json("rpc/sum_amounts 50", "/rpc/sum_amounts", json!({"min_amount": 50}), jwt),
+        post_json("rpc/sum_amounts 250", "/rpc/sum_amounts", json!({"min_amount": 250}), jwt),
+        g("/rpc/sum_amounts?min_amount=0", jwt),
+        g("/rpc/sum_amounts?min_amount=500", jwt),
     ]
 }
