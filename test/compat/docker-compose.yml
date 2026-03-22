@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "54323:5432"
+    environment:
+      POSTGRES_DB: postgrest_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ../fixtures/setup.sql:/docker-entrypoint-initdb.d/setup.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  postgrest:
+    image: postgrest/postgrest
+    ports:
+      - "3100:3000"
+    environment:
+      PGRST_DB_URI: postgres://authenticator:authenticator@db:5432/postgrest_test
+      PGRST_DB_SCHEMAS: api
+      PGRST_DB_ANON_ROLE: web_anon
+      PGRST_JWT_SECRET: reallyreallyreallyreallyverysafe
+      PGRST_LOG_LEVEL: warn
+    depends_on:
+      db:
+        condition: service_healthy
