@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod error;
 mod handlers;
+mod openapi;
 mod state;
 
 use std::path::PathBuf;
@@ -98,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 8. Build router.
     let app = Router::new()
+        .route("/", get(handle_root))
         .route("/live", get(handle_live))
         .route("/ready", get(handle_ready))
         .route("/rpc/{function}", get(handle_rpc).post(handle_rpc))

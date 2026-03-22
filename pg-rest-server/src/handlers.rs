@@ -466,6 +466,34 @@ pub async fn handle_rpc(
 }
 
 // ---------------------------------------------------------------------------
+// Root — OpenAPI spec
+// ---------------------------------------------------------------------------
+
+/// Serves the OpenAPI specification at `GET /`.
+/// Defaults to OpenAPI 2.0 (Swagger) for PostgREST compatibility.
+/// Use `?openapi-version=3` for OpenAPI 3.0.
+pub async fn handle_root(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let cache: Arc<SchemaCache> = state.schema_cache.borrow().clone();
+
+    let spec = match params.get("openapi-version").map(String::as_str) {
+        Some("3") | Some("3.0") => crate::openapi::generate_v3(&cache, &state.config),
+        _ => crate::openapi::generate_v2(&cache, &state.config),
+    };
+
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/openapi+json"),
+        ],
+        spec.to_string(),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Health endpoints
 // ---------------------------------------------------------------------------
 
