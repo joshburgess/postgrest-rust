@@ -308,7 +308,9 @@ async fn execute_with_role(
     Ok(json)
 }
 
-/// Execute a data query and an optional count query in the same transaction.
+/// Execute a data query and an optional count query.
+/// Fast path for anon reads: skip transaction, 1 round trip.
+/// Authenticated or count queries: use transaction for role scoping.
 async fn execute_with_count(
     pool: &deadpool_postgres::Pool,
     claims: &Option<JwtClaims>,
@@ -316,6 +318,44 @@ async fn execute_with_count(
     sql: &SqlOutput,
     count_sql: Option<&SqlOutput>,
 ) -> Result<(Option<String>, Option<i64>), ApiError> {
+    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
+        .params
+        .iter()
+        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+        .collect();
+
+    // Fast path: anon reads without count — 1 round trip, no transaction.
+    if claims.is_none() && count_sql.is_none() {
+        let client = pool.get().await?;
+        let rows = client.query(&sql.sql, &param_refs).await?;
+        let json: Option<String> = rows
+            .first()
+            .and_then(|r| r.try_get::<_, String>(0).ok());
+        return Ok((json, None));
+    }
+
+    // Anon with count — 2 round trips (data + count), no transaction needed.
+    if claims.is_none() {
+        let client = pool.get().await?;
+        let rows = client.query(&sql.sql, &param_refs).await?;
+        let json: Option<String> = rows
+            .first()
+            .and_then(|r| r.try_get::<_, String>(0).ok());
+        let total = if let Some(csql) = count_sql {
+            let cp: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = csql
+                .params
+                .iter()
+                .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+                .collect();
+            let crow = client.query_one(&csql.sql, &cp).await?;
+            Some(crow.get::<_, i64>(0))
+        } else {
+            None
+        };
+        return Ok((json, total));
+    }
+
+    // Authenticated path: use transaction for SET LOCAL ROLE scoping.
     let mut client = pool.get().await?;
     let txn = client.transaction().await?;
 
@@ -336,18 +376,11 @@ async fn execute_with_count(
         .await?;
     }
 
-    // Data query.
-    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
-        .params
-        .iter()
-        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-        .collect();
     let rows = txn.query(&sql.sql, &param_refs).await?;
     let json: Option<String> = rows
         .first()
         .and_then(|r| r.try_get::<_, String>(0).ok());
 
-    // Count query (if requested).
     let total = if let Some(csql) = count_sql {
         let cp: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = csql
             .params
