@@ -135,6 +135,97 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             Some(json!({"title": "compat-task", "project_id": 1, "assigned_to": 4})),
             jwt, vec![repr.clone()]),
 
+        // ==== Insert with boolean variations ====
+        mut_skip("insert items active false", "POST", "/items",
+            Some(json!({"name": "compat-af", "active": false})), jwt, vec![repr.clone()]),
+        mut_skip("insert items active true explicit", "POST", "/items",
+            Some(json!({"name": "compat-at", "active": true, "price": 7.77})), jwt, vec![repr.clone()]),
+
+        // ==== Insert with numeric edge cases ====
+        mut_skip("insert items zero price", "POST", "/items",
+            Some(json!({"name": "compat-z", "price": 0, "quantity": 0})), jwt, vec![repr.clone()]),
+        mut_skip("insert items large price", "POST", "/items",
+            Some(json!({"name": "compat-lp", "price": 99999.99})), jwt, vec![repr.clone()]),
+        mut_skip("insert items negative qty", "POST", "/items",
+            Some(json!({"name": "compat-nq", "quantity": -5})), jwt, vec![repr.clone()]),
+
+        // ==== Insert employees (self-referencing FK) ====
+        mut_skip("insert employee with mgr", "POST", "/employees",
+            Some(json!({"name": "compat-emp1", "manager_id": 1})), jwt, vec![repr.clone()]),
+        mut_skip("insert employee no mgr", "POST", "/employees",
+            Some(json!({"name": "compat-emp2"})), jwt, vec![repr.clone()]),
+
+        // ==== Insert into entities (arrays + JSONB) ====
+        mut_skip("insert entity with arr", "POST", "/entities",
+            Some(json!({"name": "compat-ent", "arr": ["x","y"], "data": {"k": "v"}})), jwt, vec![repr.clone()]),
+        mut_skip("insert entity null arr", "POST", "/entities",
+            Some(json!({"name": "compat-ent2", "arr": null, "data": null})), jwt, vec![repr.clone()]),
+
+        // ==== Multi-row insert items ====
+        mut_skip("insert items 3-row", "POST", "/items",
+            Some(json!([
+                {"name": "compat-3a", "price": 1.0},
+                {"name": "compat-3b", "price": 2.0},
+                {"name": "compat-3c", "price": 3.0}
+            ])), jwt, vec![repr.clone()]),
+
+        // ==== Update with various filter operators ====
+        mut_skip("update items gt filter", "PATCH", "/items?name=like.compat-3*&price=gt.1",
+            Some(json!({"quantity": 10})), jwt, vec![repr.clone()]),
+        mut_skip("update items in filter", "PATCH", "/items?name=in.(compat-af,compat-at)",
+            Some(json!({"quantity": 99})), jwt, vec![repr.clone()]),
+        mut_skip("update items bool filter", "PATCH", "/items?active=eq.false&name=like.compat*",
+            Some(json!({"active": true})), jwt, vec![repr.clone()]),
+
+        // ==== Update set to specific values ====
+        mut_skip("update profile email", "PATCH", "/profiles?username=eq.compat-user",
+            Some(json!({"email": "new@test.com"})), jwt, vec![repr.clone()]),
+        mut_skip("update profile active", "PATCH", "/profiles?username=eq.compat-noemail",
+            Some(json!({"active": false})), jwt, vec![repr.clone()]),
+
+        // ==== Update compound pk ====
+        mutation("update compound after upsert", "PATCH", "/compound_pk?k1=eq.88&k2=eq.88",
+            Some(json!({"extra": "final"})), jwt, vec![repr.clone()]),
+
+        // ==== Upsert multi-row with mixed insert/update ====
+        mut_skip("upsert settings 3-row", "POST", "/settings",
+            Some(json!([
+                {"key": "compat_s1", "value": "new1"},
+                {"key": "compat_s2", "value": "new2"},
+                {"key": "compat_s3", "value": "new3"}
+            ])), jwt, vec![merge.clone()]),
+        mut_skip("upsert settings update 2", "POST", "/settings",
+            Some(json!([
+                {"key": "compat_s1", "value": "upd1"},
+                {"key": "compat_s2", "value": "upd2"}
+            ])), jwt, vec![merge.clone()]),
+
+        // ==== Insert into unicode_test ====
+        mut_skip("insert unicode accent", "POST", "/unicode_test",
+            Some(json!({"name": "compat-über", "note": "umlaut"})), jwt, vec![repr.clone()]),
+
+        // ==== Delete with various filters ====
+        mut_skip("delete items price filter", "DELETE", "/items?price=eq.0&name=like.compat*",
+            None, jwt, vec![repr.clone()]),
+        mut_skip("delete items active filter", "DELETE", "/items?active=eq.true&name=like.compat-3*",
+            None, jwt, vec![repr.clone()]),
+        mut_skip("delete employees compat", "DELETE", "/employees?name=like.compat*",
+            None, jwt, vec![repr.clone()]),
+        mut_skip("delete entities compat", "DELETE", "/entities?name=like.compat*",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== Delete with or filter ====
+        mut_skip("delete items or filter", "DELETE", "/items?or=(name.eq.compat-af,name.eq.compat-at)",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== Delete with in filter ====
+        mut_skip("delete items in filter", "DELETE", "/items?name=in.(compat-lp,compat-nq)",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== Insert + read back verification ====
+        mut_skip("insert settings verify", "POST", "/settings",
+            Some(json!({"key": "compat_verify", "value": "check"})), jwt, vec![repr.clone()]),
+
         // Cleanup remaining compat data
         mut_skip("cleanup items", "DELETE", "/items?name=like.compat*",
             None, jwt, vec![minimal.clone()]),
@@ -146,7 +237,13 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             None, jwt, vec![minimal.clone()]),
         mut_skip("cleanup profiles", "DELETE", "/profiles?username=like.compat*",
             None, jwt, vec![minimal.clone()]),
-        mut_skip("cleanup tasks", "DELETE", "/tasks?title=eq.compat-task",
+        mut_skip("cleanup tasks", "DELETE", "/tasks?title=like.compat*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup settings", "DELETE", "/settings?key=like.compat*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup employees", "DELETE", "/employees?name=like.compat*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup entities", "DELETE", "/entities?name=like.compat*",
             None, jwt, vec![minimal.clone()]),
     ]
 }

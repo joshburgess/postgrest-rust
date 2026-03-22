@@ -344,6 +344,104 @@ pub fn cases(jwt_anon: &str, jwt_user: &str) -> Vec<TestCase> {
         g("/entities?select=id,name&order=id.asc", jwt_anon),
         g("/tasks?select=id,title&order=id.asc", jwt_anon),
         g("/compound_pk?select=k1,k2&order=k1.asc,k2.asc", jwt_anon),
+
+        // ==== More singular edge cases ====
+        {
+            let mut tc = g("/employees?id=eq.1", jwt_anon);
+            tc.name = "singular CEO";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/items?id=eq.1", jwt_anon);
+            tc.name = "singular item";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g_status_only("singular 406 items", "/items", jwt_anon);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g_status_only("singular 406 numbered", "/numbered?limit=5", jwt_anon);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== CSV on more tables ====
+        {
+            let mut tc = g("/types_test?order=id.asc", jwt_anon);
+            tc.name = "CSV types_test";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+        {
+            let mut tc = g("/compound_pk?order=k1.asc,k2.asc", jwt_anon);
+            tc.name = "CSV compound_pk";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+        {
+            let mut tc = g("/tasks?order=id.asc", jwt_anon);
+            tc.name = "CSV tasks";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+
+        // ==== Count on every table ====
+        {
+            let mut tc = g("/numbered?order=id.asc", jwt_anon);
+            tc.name = "count numbered full";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/entities?order=id.asc", jwt_anon);
+            tc.name = "count entities";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/projects?order=id.asc", jwt_anon);
+            tc.name = "count projects";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/types_test?order=id.asc", jwt_anon);
+            tc.name = "count types_test";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/upsert_test?order=id.asc", jwt_anon);
+            tc.name = "count upsert_test";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+
+        // ==== Profiles: more complex filter combos ====
+        g("/profiles?or=(and(age.gt.25,score.gt.70),username.eq.carol)&order=id.asc", jwt_anon),
+        g("/profiles?select=username,age,score&age=not.is.null&score=not.is.null&order=score.desc", jwt_anon),
+        g("/profiles?select=username&or=(email.like.*example*,bio.is.null)&order=username.asc", jwt_anon),
+
+        // ==== Items: ordering and filtering combos ====
+        g("/items?select=name,price,quantity&order=price.asc,name.asc", jwt_anon),
+        g("/items?or=(price.gt.20,quantity.gt.100)&order=name.asc", jwt_anon),
+        g("/items?active=eq.true&order=quantity.desc", jwt_anon),
+
+        // ==== Books: various combos ====
+        g("/books?select=title&or=(pages.gt.400,published.is.null)&order=title.asc", jwt_anon),
+        g("/books?select=title,pages&pages=not.is.null&order=pages.asc", jwt_anon),
+
+        // ==== Employees: hierarchy queries ====
+        g("/employees?manager_id=eq.2&order=id.asc", jwt_anon),
+        g("/employees?or=(manager_id.eq.1,manager_id.is.null)&order=id.asc", jwt_anon),
+        g("/employees?select=name&manager_id=not.is.null&order=name.asc", jwt_anon),
     ]
 }
 
