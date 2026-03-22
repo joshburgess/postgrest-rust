@@ -63,6 +63,9 @@ impl IntoResponse for ApiError {
                     Some("23514") => StatusCode::BAD_REQUEST,          // check violation
                     Some("42P01") => StatusCode::NOT_FOUND,            // undefined table
                     Some("42883") => StatusCode::NOT_FOUND,            // undefined function
+                    Some(c) if c.starts_with("P0") => StatusCode::BAD_REQUEST, // user RAISE
+                    Some(c) if c.starts_with("23") => StatusCode::BAD_REQUEST, // integrity
+                    Some(c) if c.starts_with("22") => StatusCode::BAD_REQUEST, // data exception
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
                 (status, self.to_string())

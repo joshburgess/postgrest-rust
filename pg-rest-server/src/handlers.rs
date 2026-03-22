@@ -166,22 +166,22 @@ fn parse_query_pairs(query: &str) -> Vec<(String, String)> {
 }
 
 fn urlencoding_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.bytes();
-    while let Some(b) = chars.next() {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut iter = s.bytes();
+    while let Some(b) = iter.next() {
         match b {
             b'%' => {
-                let hi = chars.next().and_then(hex_val);
-                let lo = chars.next().and_then(hex_val);
+                let hi = iter.next().and_then(hex_val);
+                let lo = iter.next().and_then(hex_val);
                 if let (Some(h), Some(l)) = (hi, lo) {
-                    result.push((h << 4 | l) as char);
+                    bytes.push(h << 4 | l);
                 }
             }
-            b'+' => result.push(' '),
-            _ => result.push(b as char),
+            b'+' => bytes.push(b' '),
+            _ => bytes.push(b),
         }
     }
-    result
+    String::from_utf8(bytes).unwrap_or_default()
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -378,13 +378,12 @@ pub async fn handle_read(
     let select = parse_select(
         params.iter().find(|(k,_)| k == "select").map(|(_,v)| v.as_str()).unwrap_or("*"),
     )?;
-    // Combine multiple order params
-    let order_str: String = params.iter()
-        .filter(|(k,_)| k == "order")
+    // PostgREST uses the last order param (not combined).
+    let order_str = params.iter()
+        .rfind(|(k,_)| k == "order")
         .map(|(_,v)| v.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
-    let order = parse_order(&order_str)?;
+        .unwrap_or("");
+    let order = parse_order(order_str)?;
     let filters = extract_filters_multi(&params)?;
 
     let (range_limit, range_offset) = parse_range(&headers);

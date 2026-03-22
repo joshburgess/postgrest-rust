@@ -251,6 +251,88 @@ INSERT INTO api.numbered (val)
 SELECT generate_series(1, 100);
 
 -- ==========================================================================
+-- Embed disambiguation tables (two FKs from one table to the same target)
+-- ==========================================================================
+
+CREATE TABLE api.projects (
+    id   serial PRIMARY KEY,
+    name text NOT NULL
+);
+
+CREATE TABLE api.tasks (
+    id          serial PRIMARY KEY,
+    title       text NOT NULL,
+    project_id  integer NOT NULL REFERENCES api.projects(id),
+    assigned_to integer REFERENCES api.employees(id),
+    created_by  integer REFERENCES api.employees(id)
+);
+
+INSERT INTO api.projects (name) VALUES ('Alpha'), ('Beta');
+
+INSERT INTO api.tasks (title, project_id, assigned_to, created_by) VALUES
+    ('Design', 1, 4, 1),
+    ('Implement', 1, 5, 2),
+    ('Test', 2, 5, 3);
+
+-- ==========================================================================
+-- Unicode/special character data
+-- ==========================================================================
+
+CREATE TABLE api.unicode_test (
+    id   serial PRIMARY KEY,
+    name text NOT NULL,
+    note text
+);
+
+INSERT INTO api.unicode_test (name, note) VALUES
+    ('café', 'accent'),
+    ('naïve', 'diaeresis'),
+    ('日本語', 'japanese'),
+    ('O''Brien', 'apostrophe'),
+    ('line1' || chr(10) || 'line2', 'newline'),
+    ('hello "world"', 'quotes');
+
+-- ==========================================================================
+-- Additional RPC functions
+-- ==========================================================================
+
+-- Function returning TABLE type
+CREATE FUNCTION api.get_items_by_price(min_price numeric)
+    RETURNS TABLE(id integer, name text, price numeric)
+    LANGUAGE sql STABLE
+    AS $$ SELECT id, name, price FROM api.items WHERE price >= min_price ORDER BY price $$;
+
+-- Function with array parameter
+CREATE FUNCTION api.array_param(ids integer[])
+    RETURNS SETOF api.authors
+    LANGUAGE sql STABLE
+    AS $$ SELECT * FROM api.authors WHERE id = ANY(ids) ORDER BY id $$;
+
+-- Function that returns NULL
+CREATE FUNCTION api.null_func()
+    RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$ SELECT NULL::text $$;
+
+-- Function with JSON parameter
+CREATE FUNCTION api.json_param(data jsonb)
+    RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$ SELECT data->>'key' $$;
+
+-- Function that raises an error
+CREATE FUNCTION api.error_func()
+    RETURNS void
+    LANGUAGE plpgsql
+    AS $$ BEGIN RAISE EXCEPTION 'test error' USING ERRCODE = 'P0001'; END $$;
+
+-- Variadic function
+CREATE FUNCTION api.variadic_func(VARIADIC nums integer[])
+    RETURNS integer
+    LANGUAGE sql IMMUTABLE
+    AS $$ SELECT sum(x)::integer FROM unnest(nums) AS x $$;
+
+-- ==========================================================================
 -- Grant permissions on new tables
 -- ==========================================================================
 
