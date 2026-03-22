@@ -71,7 +71,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()?
     };
 
-    // 4. Build initial schema cache.
+    // 4. Warm up connection pool.
+    {
+        let mut warmup = Vec::new();
+        let target = pool.status().max_size.min(config.database.pool_size);
+        for _ in 0..target {
+            match pool.get().await {
+                Ok(c) => warmup.push(c),
+                Err(e) => {
+                    tracing::warn!("Pool warmup partial: {e}");
+                    break;
+                }
+            }
+        }
+        tracing::info!("Pool warmed up: {} connections", warmup.len());
+    } // connections return to pool when dropped
+
+    // 5. Build initial schema cache.
     tracing::info!("Loading schema cache…");
     let client = pool.get().await?;
     let cache =
