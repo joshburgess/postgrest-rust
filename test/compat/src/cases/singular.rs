@@ -144,5 +144,124 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Prefer", "count=exact".to_string()));
             tc
         },
+
+        // ==== More singular tests ====
+        {
+            let mut tc = g("/orders?id=eq.1", jwt);
+            tc.name = "singular order 1";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/logs?id=eq.3", jwt);
+            tc.name = "singular log 3";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/unicode_test?id=eq.1", jwt);
+            tc.name = "singular unicode";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/numbered?val=eq.50", jwt);
+            tc.name = "singular numbered";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/entities?id=eq.1", jwt);
+            tc.name = "singular entity";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== Singular with select ====
+        {
+            let mut tc = g("/orders?select=customer,amount&id=eq.1", jwt);
+            tc.name = "singular order select";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/profiles?select=username,score&username=eq.alice", jwt);
+            tc.name = "singular profile select";
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== Singular 406 on various tables ====
+        {
+            let mut tc = g_status_only("singular 406 orders", "/orders", jwt);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g_status_only("singular 406 profiles", "/profiles", jwt);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+        {
+            let mut tc = g_status_only("singular 406 logs", "/logs", jwt);
+            tc.headers.push(("Accept", "application/vnd.pgrst.object+json".to_string()));
+            tc
+        },
+
+        // ==== CSV on more tables ====
+        {
+            let mut tc = g("/orders?select=customer,amount,status&order=id.asc", jwt);
+            tc.name = "CSV orders select";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+        {
+            let mut tc = g("/logs?select=level,message&order=id.asc", jwt);
+            tc.name = "CSV logs select";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+        {
+            let mut tc = g("/unicode_test?order=id.asc", jwt);
+            tc.name = "CSV unicode";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+        {
+            let mut tc = g("/entities?select=id,name&order=id.asc", jwt);
+            tc.name = "CSV entities";
+            tc.headers.push(("Accept", "text/csv".to_string()));
+            tc.compare_body = false;
+            tc
+        },
+
+        // ==== Count on more tables ====
+        {
+            let mut tc = g("/orders?status=eq.completed&order=id.asc", jwt);
+            tc.name = "count orders completed";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/logs?level=eq.info&order=id.asc", jwt);
+            tc.name = "count logs info";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/profiles?active=eq.true&order=id.asc", jwt);
+            tc.name = "count active profiles 2";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/items?order=id.asc", jwt);
+            tc.name = "count all items";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
     ]
 }

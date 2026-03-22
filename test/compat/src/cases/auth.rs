@@ -186,5 +186,42 @@ pub fn cases(jwt_anon: &str, jwt_user: &str) -> Vec<TestCase> {
         // ==== Embedding as user ====
         g("/authors?select=name,books(title)&order=id.asc&id=in.(1,2)", jwt_user),
         g("/books?select=title,authors(name)&order=id.asc", jwt_user),
+
+        // ==== User reads from new tables ====
+        g("/orders?order=id.asc", jwt_user),
+        g("/logs?order=id.asc", jwt_user),
+        g("/tasks?order=id.asc", jwt_user),
+
+        // ==== Anon reads from new tables ====
+        g("/orders?order=id.asc", jwt_anon),
+        g("/logs?order=id.asc", jwt_anon),
+
+        // ==== User with filters ====
+        g("/orders?status=eq.pending&order=id.asc", jwt_user),
+        g("/logs?level=eq.error&order=id.asc", jwt_user),
+        g("/profiles?active=eq.true&order=id.asc", jwt_user),
+
+        // ==== RPC as anon on new functions ====
+        g("/rpc/count_by_status?s=completed", jwt_anon),
+        g("/rpc/clamp?val=5&lo=0&hi=10", jwt_anon),
+        g("/rpc/multiply?a=2&b=3", jwt_anon),
+
+        // ==== RPC as user on new functions ====
+        g("/rpc/count_by_status?s=pending", jwt_user),
+        g("/rpc/sum_amounts", jwt_user),
+
+        // ==== Count as different roles ====
+        {
+            let mut tc = g("/orders?order=id.asc", jwt_user);
+            tc.name = "user count orders";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
+        {
+            let mut tc = g("/logs?order=id.asc", jwt_anon);
+            tc.name = "anon count logs";
+            tc.headers.push(("Prefer", "count=exact".to_string()));
+            tc
+        },
     ]
 }

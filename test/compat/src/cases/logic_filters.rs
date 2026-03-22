@@ -66,5 +66,17 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         // ==== or with not ====
         g("/authors?or=(name.eq.Alice,bio.not.is.null)&order=id.asc", jwt),
         g("/numbered?or=(val.lte.2,val.gte.99)&order=val.asc", jwt),
+
+        // ==== or on orders ====
+        g("/orders?or=(status.eq.completed,status.eq.shipped)&order=id.asc", jwt),
+        g("/orders?or=(amount.gt.200,notes.is.null)&order=id.asc", jwt),
+        g("/orders?or=(customer.eq.Alice,and(customer.eq.Bob,amount.gt.200))&order=id.asc", jwt),
+
+        // ==== or on logs ====
+        g("/logs?or=(level.eq.error,level.eq.warn)&order=id.asc", jwt),
+        g("/logs?or=(message.like.*started*,message.like.*failed*)&order=id.asc", jwt),
+
+        // ==== and with or on items ====
+        g("/items?or=(price.lt.5,price.gt.20)&active=eq.true&order=id.asc", jwt),
     ]
 }

@@ -304,6 +304,23 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/items?select=name,price&active=eq.true&order=price.desc", jwt),
         g("/profiles?select=username,score&score=not.is.null&order=score.desc", jwt),
 
+        // ==== Orders table queries ====
+        g("/orders?order=id.asc", jwt),
+        g("/orders?select=customer,amount&order=amount.desc", jwt),
+        g("/orders?status=eq.pending&order=id.asc", jwt),
+        g("/orders?customer=eq.Alice&order=id.asc", jwt),
+        g("/orders?amount=gte.100&order=id.asc", jwt),
+        g("/orders?notes=is.null&order=id.asc", jwt),
+        g("/orders?status=not.eq.pending&order=id.asc", jwt),
+
+        // ==== Logs table queries ====
+        g("/logs?order=id.asc", jwt),
+        g("/logs?level=eq.error", jwt),
+        g("/logs?level=neq.info&order=id.asc", jwt),
+        g("/logs?level=in.(warn,error)&order=id.asc", jwt),
+        g("/logs?select=level,message&order=level.asc,id.asc", jwt),
+        g("/logs?message=ilike.*server*&order=id.asc", jwt),
+
         // ==== 404 for nonexistent table ====
         g_status_only("GET /nonexistent (404)", "/nonexistent", jwt),
     ]

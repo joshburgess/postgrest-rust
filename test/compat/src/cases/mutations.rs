@@ -309,5 +309,85 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             None, jwt, vec![minimal.clone()]),
         mut_skip("cleanup upsert_test compat1", "DELETE", "/upsert_test?code=eq.COMPAT1",
             None, jwt, vec![minimal.clone()]),
+
+        // ==== More insert patterns: orders with all fields ====
+        mut_skip("insert order full", "POST", "/orders",
+            Some(json!({"customer": "compat2-c", "amount": 555.55, "status": "shipped", "notes": "full fields"})),
+            jwt, vec![repr.clone()]),
+        mut_skip("insert order null notes", "POST", "/orders",
+            Some(json!({"customer": "compat2-c", "amount": 1.00, "notes": null})),
+            jwt, vec![repr.clone()]),
+
+        // ==== Multi-row insert profiles ====
+        mut_skip("insert profiles batch 4", "POST", "/profiles",
+            Some(json!([
+                {"username": "compat2-p1", "email": "p1@t.com", "age": 20, "score": 50},
+                {"username": "compat2-p2", "age": 30},
+                {"username": "compat2-p3", "bio": "tester"},
+                {"username": "compat2-p4", "active": false, "score": 0}
+            ])), jwt, vec![repr.clone()]),
+
+        // ==== Update multiple columns at once ====
+        mut_skip("update profile multi cols", "PATCH", "/profiles?username=eq.compat2-p1",
+            Some(json!({"email": "new@t.com", "age": 21, "score": 51, "bio": "updated"})),
+            jwt, vec![repr.clone()]),
+        mut_skip("update profile active+score", "PATCH", "/profiles?username=eq.compat2-p4",
+            Some(json!({"active": true, "score": 99.99})), jwt, vec![repr.clone()]),
+
+        // ==== Insert logs with various contexts ====
+        mut_skip("insert log nested ctx", "POST", "/logs",
+            Some(json!({"level": "info", "message": "compat2-nested", "context": {"a": {"b": {"c": 1}}}})),
+            jwt, vec![repr.clone()]),
+        mut_skip("insert log array ctx", "POST", "/logs",
+            Some(json!({"level": "debug", "message": "compat2-array", "context": {"tags": ["a","b","c"]}})),
+            jwt, vec![repr.clone()]),
+        mut_skip("insert log empty ctx", "POST", "/logs",
+            Some(json!({"message": "compat2-empty-ctx"})), jwt, vec![repr.clone()]),
+
+        // ==== Update with not filter ====
+        mut_skip("update items not.active", "PATCH", "/items?name=like.compat2*&active=not.eq.false",
+            Some(json!({"quantity": 777})), jwt, vec![repr.clone()]),
+
+        // ==== Delete with not.is.null ====
+        mut_skip("delete orders not null notes", "DELETE", "/orders?notes=not.is.null&customer=like.compat2*",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== Insert into numbered (simple int table) ====
+        mut_skip("insert numbered", "POST", "/numbered",
+            Some(json!({"val": 9999})), jwt, vec![repr.clone()]),
+
+        // ==== Insert multi-row logs ====
+        mut_skip("insert logs batch 5", "POST", "/logs",
+            Some(json!([
+                {"message": "compat2-1"},
+                {"message": "compat2-2"},
+                {"message": "compat2-3"},
+                {"message": "compat2-4"},
+                {"message": "compat2-5"}
+            ])), jwt, vec![repr.clone()]),
+
+        // ==== Update with in filter ====
+        mut_skip("update profiles in filter", "PATCH", "/profiles?username=in.(compat2-p2,compat2-p3)",
+            Some(json!({"score": 42})), jwt, vec![repr.clone()]),
+
+        // ==== Upsert profiles (unique on username) ====
+        mut_skip("upsert profile new", "POST", "/profiles?on_conflict=username",
+            Some(json!({"username": "compat2-ups", "score": 10})), jwt, vec![merge.clone()]),
+        mut_skip("upsert profile update", "POST", "/profiles?on_conflict=username",
+            Some(json!({"username": "compat2-ups", "score": 20})), jwt, vec![merge.clone()]),
+
+        // ==== Delete with gt/lt ====
+        mut_skip("delete logs by id range", "DELETE", "/logs?message=like.compat2*",
+            None, jwt, vec![repr.clone()]),
+
+        // ==== Cleanup round 2 ====
+        mut_skip("cleanup2 orders", "DELETE", "/orders?customer=like.compat2*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup2 profiles", "DELETE", "/profiles?username=like.compat2*",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup2 numbered", "DELETE", "/numbered?val=eq.9999",
+            None, jwt, vec![minimal.clone()]),
+        mut_skip("cleanup2 items", "DELETE", "/items?name=like.compat2*",
+            None, jwt, vec![minimal.clone()]),
     ]
 }
