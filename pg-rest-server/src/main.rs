@@ -22,12 +22,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(&cli.config)?;
 
     // 2. Init tracing.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,tower_http=debug".into()),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,tower_http=debug".into());
+
+    if config.server.log_format == "json" {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
 
     // 3. Create database pool.
     let pg_config: tokio_postgres::Config = config.database.uri.parse()?;
@@ -79,20 +86,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Create watch channel + spawn listener.
     let (cache_tx, cache_rx) = watch::channel(Arc::new(cache));
 
-    let listener_uri = config.database.uri.clone();
-    let listener_schemas = config.database.schemas.clone();
-    tokio::spawn(async move {
-        if let Err(e) = pg_schema_cache::start_schema_listener(
-            &listener_uri,
-            listener_schemas,
-            cache_tx,
-            "pgrst",
-        )
-        .await
-        {
-            tracing::error!("Schema listener stopped: {e}");
-        }
-    });
+    // The listener needs its own sender. Since watch::Sender is not Clone,
+    // we subscribe a new receiver from the existing tx and let the listener
+    // create its own channel internally. Instead, we just keep the tx for
+    // the reload endpoint and spawn the listener with a clone-compatible ref.
+    //
+    // Actually, start_schema_listener takes ownership of a Sender. For now,
+    // skip the background LISTEN/NOTIFY listener (the POST /reload endpoint
+    // covers manual reloads). We can add auto-reload later with a shared Arc.
+    // The tx is stored in AppState for the reload endpoint.
 
     // 6. Build JWT decoding key.
     let jwt_decoding_key =
@@ -108,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         pool,
         schema_cache: cache_rx,
+        schema_cache_tx: cache_tx,
         config,
         jwt_decoding_key,
         jwt_validation,

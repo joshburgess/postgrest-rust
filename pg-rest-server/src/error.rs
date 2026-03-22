@@ -134,3 +134,9 @@ impl From<deadpool_postgres::PoolError> for ApiError {
         Self::Pool(e)
     }
 }
+
+impl From<pg_schema_cache::SchemaCacheError> for ApiError {
+    fn from(e: pg_schema_cache::SchemaCacheError) -> Self {
+        Self::BadRequest(format!("schema cache error: {e}"))
+    }
+}

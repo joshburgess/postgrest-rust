@@ -53,7 +53,7 @@ async fn setup() -> axum::Router {
             .unwrap();
     drop(client);
 
-    let (_, cache_rx) = watch::channel(Arc::new(cache));
+    let (cache_tx, cache_rx) = watch::channel(Arc::new(cache));
 
     let jwt_decoding_key =
         jsonwebtoken::DecodingKey::from_secret(config.jwt.secret.as_bytes());
@@ -64,6 +64,7 @@ async fn setup() -> axum::Router {
     let state = Arc::new(AppState {
         pool,
         schema_cache: cache_rx,
+        schema_cache_tx: cache_tx,
         config,
         jwt_decoding_key,
         jwt_validation,

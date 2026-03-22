@@ -119,15 +119,19 @@ fn extract_filters(params: &HashMap<String, String>) -> Result<FilterNode, ApiEr
     Ok(FilterNode::And(nodes))
 }
 
-/// Parse the `Accept-Profile` header to select a specific schema.
+/// Parse `Accept-Profile` (reads) or `Content-Profile` (writes) header
+/// to select a specific schema.
 fn resolve_schemas<'a>(
     headers: &HeaderMap,
     config_schemas: &'a [String],
 ) -> Result<&'a [String], ApiError> {
-    if let Some(profile) = headers.get("accept-profile").and_then(|v| v.to_str().ok()) {
+    let profile = headers
+        .get("accept-profile")
+        .or_else(|| headers.get("content-profile"))
+        .and_then(|v| v.to_str().ok());
+
+    if let Some(profile) = profile {
         if config_schemas.iter().any(|s| s == profile) {
-            // The caller uses the full list but searches this schema first.
-            // For simplicity, we just validate the schema exists.
             Ok(config_schemas)
         } else {
             Err(ApiError::BadRequest(format!(
@@ -661,6 +665,38 @@ pub async fn handle_root(
         spec.to_string(),
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Schema reload
+// ---------------------------------------------------------------------------
+
+/// POST /reload — rebuild the schema cache from the database.
+pub async fn handle_reload(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, ApiError> {
+    let client = state.pool.get().await?;
+    let cache =
+        pg_schema_cache::build_schema_cache(&client, &state.config.database.schemas).await?;
+    drop(client);
+
+    let tables = cache.tables.len();
+    let functions = cache.functions.len();
+    state.schema_cache_tx.send(Arc::new(cache)).ok();
+
+    tracing::info!("Schema cache reloaded: {tables} tables, {functions} functions");
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({
+            "message": "schema cache reloaded",
+            "tables": tables,
+            "functions": functions,
+        })
+        .to_string(),
+    )
+        .into_response())
 }
 
 // ---------------------------------------------------------------------------

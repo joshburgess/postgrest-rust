@@ -33,13 +33,21 @@ fn parse_select_item(input: &str) -> Result<SelectItem, ParseError> {
         let before = &input[..paren_pos];
         let inner = &input[paren_pos + 1..input.len() - 1];
 
-        let (alias, target) = if let Some(colon) = before.find(':') {
+        // Parse alias:target!inner or alias:target or just target
+        let (alias, rest) = if let Some(colon) = before.find(':') {
             (
                 Some(before[..colon].to_string()),
-                before[colon + 1..].to_string(),
+                &before[colon + 1..],
             )
         } else {
-            (None, before.to_string())
+            (None, before)
+        };
+
+        // Check for !inner hint: target!inner
+        let (target, is_inner) = if let Some(t) = rest.strip_suffix("!inner") {
+            (t.to_string(), true)
+        } else {
+            (rest.to_string(), false)
         };
 
         let sub_select = parse_select(inner)?;
@@ -47,6 +55,7 @@ fn parse_select_item(input: &str) -> Result<SelectItem, ParseError> {
         return Ok(SelectItem::Embed {
             alias,
             target,
+            inner: is_inner,
             sub_request: Box::new(ReadRequest {
                 table: QualifiedName::new("", ""),
                 select: sub_select,
@@ -56,6 +65,39 @@ fn parse_select_item(input: &str) -> Result<SelectItem, ParseError> {
                 offset: None,
                 count: CountOption::None,
             }),
+        });
+    }
+
+    // Check for JSON path access: column->>key or column->key
+    // Also with optional cast: column->>key::type
+    if let Some(pos) = input.find("->>") {
+        let column = input[..pos].to_string();
+        let rest = &input[pos + 3..];
+        let (path, cast) = if let Some((p, t)) = rest.split_once("::") {
+            (p.to_string(), Some(t.to_string()))
+        } else {
+            (rest.to_string(), None)
+        };
+        return Ok(SelectItem::JsonAccess {
+            column,
+            path,
+            as_text: true,
+            cast,
+        });
+    }
+    if let Some(pos) = input.find("->") {
+        let column = input[..pos].to_string();
+        let rest = &input[pos + 2..];
+        let (path, cast) = if let Some((p, t)) = rest.split_once("::") {
+            (p.to_string(), Some(t.to_string()))
+        } else {
+            (rest.to_string(), None)
+        };
+        return Ok(SelectItem::JsonAccess {
+            column,
+            path,
+            as_text: false,
+            cast,
         });
     }
 
@@ -350,6 +392,7 @@ mod tests {
                 alias,
                 target,
                 sub_request,
+                ..
             } => {
                 assert_eq!(alias.as_deref(), Some("author"));
                 assert_eq!(target, "authors");

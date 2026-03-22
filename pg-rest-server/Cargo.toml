@@ -35,7 +35,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Observability
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [features]
 default = []

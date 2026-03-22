@@ -29,6 +29,13 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// "text" (default) or "json" for structured JSON logging.
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
+}
+
+fn default_log_format() -> String {
+    "text".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +48,7 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
+            log_format: default_log_format(),
         }
     }
 }

@@ -104,13 +104,23 @@ impl<'a> SqlBuilder<'a> {
         let table = self.resolve_table(&req.table)?;
         let table_sql = quote_qualified(&req.table);
 
-        let select_clause = self.build_select_list(&req.select, &req.table, table)?;
+        let (select_clause, inner_conds) =
+            self.build_select_list(&req.select, &req.table, table)?;
         let where_clause = self.build_where(&req.filters, table)?;
         let order_clause = Self::build_order(&req.order);
         let limit_clause = self.build_limit_offset(req.limit, req.offset);
 
+        // Append !inner embed EXISTS conditions to the WHERE clause.
+        let inner_where = if inner_conds.is_empty() {
+            where_clause
+        } else if where_clause.is_empty() {
+            format!(" WHERE {}", inner_conds.join(" AND "))
+        } else {
+            format!("{where_clause} AND {}", inner_conds.join(" AND "))
+        };
+
         let inner = format!(
-            "SELECT {select_clause} FROM {table_sql}{where_clause}{order_clause}{limit_clause}"
+            "SELECT {select_clause} FROM {table_sql}{inner_where}{order_clause}{limit_clause}"
         );
 
         Ok(format!(
@@ -118,17 +128,20 @@ impl<'a> SqlBuilder<'a> {
         ))
     }
 
+    /// Returns (select_clause, inner_join_conditions).
     fn build_select_list(
         &mut self,
         items: &[SelectItem],
         parent_qn: &QualifiedName,
         _parent_table: &Table,
-    ) -> Result<String, QueryEngineError> {
+    ) -> Result<(String, Vec<String>), QueryEngineError> {
         if items.is_empty() || (items.len() == 1 && matches!(items[0], SelectItem::Star)) {
-            return Ok("*".to_string());
+            return Ok(("*".to_string(), Vec::new()));
         }
 
         let mut parts = Vec::with_capacity(items.len());
+        let mut inner_conditions = Vec::new();
+
         for item in items {
             match item {
                 SelectItem::Column(name) => {
@@ -137,23 +150,40 @@ impl<'a> SqlBuilder<'a> {
                 SelectItem::Cast { column, pg_type } => {
                     parts.push(format!("{}::{}", quote_ident(column), pg_type));
                 }
+                SelectItem::JsonAccess {
+                    column,
+                    path,
+                    as_text,
+                    cast,
+                } => {
+                    let op = if *as_text { "->>" } else { "->" };
+                    let expr = format!("{}{op}'{}'", quote_ident(column), path.replace('\'', "''"));
+                    match cast {
+                        Some(t) => parts.push(format!("({expr})::{t}")),
+                        None => parts.push(expr),
+                    }
+                }
                 SelectItem::Star => {
                     parts.push("*".to_string());
                 }
                 SelectItem::Embed {
                     alias,
                     target,
+                    inner,
                     sub_request,
                 } => {
-                    let embed_sql =
-                        self.build_embed_subquery(parent_qn, target, sub_request)?;
+                    let (embed_sql, inner_cond) =
+                        self.build_embed_subquery(parent_qn, target, sub_request, *inner)?;
                     let alias_name = alias.as_deref().unwrap_or(target.as_str());
                     parts.push(format!("{embed_sql} AS {}", quote_ident(alias_name)));
+                    if let Some(cond) = inner_cond {
+                        inner_conditions.push(cond);
+                    }
                 }
             }
         }
 
-        Ok(parts.join(", "))
+        Ok((parts.join(", "), inner_conditions))
     }
 
     // -----------------------------------------------------------------------
@@ -165,7 +195,8 @@ impl<'a> SqlBuilder<'a> {
         parent_qn: &QualifiedName,
         target_name: &str,
         sub_request: &ReadRequest,
-    ) -> Result<String, QueryEngineError> {
+        inner_join: bool,
+    ) -> Result<(String, Option<String>), QueryEngineError> {
         let target_table = self.find_table_by_name(target_name)?;
         let target_qn = target_table.name.clone();
         let target_sql = quote_qualified(&target_qn);
@@ -187,8 +218,8 @@ impl<'a> SqlBuilder<'a> {
             })?;
         let rel = (*rel).clone();
 
-        // Build sub-select columns.
-        let sub_select =
+        // Build sub-select columns (ignore inner conditions for nested embeds).
+        let (sub_select, _nested_inner) =
             self.build_select_list(&sub_request.select, &target_qn, target_table)?;
 
         // Join condition.
@@ -224,12 +255,23 @@ impl<'a> SqlBuilder<'a> {
         let inner =
             format!("SELECT {sub_select} FROM {target_sql}{where_clause}{sub_order}{sub_limit}");
 
+        // For !inner, generate an EXISTS condition to filter parent rows.
+        let exists_condition = if inner_join {
+            Some(format!("EXISTS ({inner})"))
+        } else {
+            None
+        };
+
         match rel.rel_type {
-            RelType::ManyToOne => Ok(format!(
-                "(SELECT row_to_json({sub_alias}) FROM ({inner}) {sub_alias})"
+            RelType::ManyToOne => Ok((
+                format!("(SELECT row_to_json({sub_alias}) FROM ({inner}) {sub_alias})"),
+                exists_condition,
             )),
-            RelType::OneToMany => Ok(format!(
-                "COALESCE((SELECT json_agg({sub_alias}) FROM ({inner}) {sub_alias}), '[]')"
+            RelType::OneToMany => Ok((
+                format!(
+                    "COALESCE((SELECT json_agg({sub_alias}) FROM ({inner}) {sub_alias}), '[]')"
+                ),
+                exists_condition,
             )),
             RelType::ManyToMany => unreachable!(), // handled above
         }
@@ -287,7 +329,7 @@ impl<'a> SqlBuilder<'a> {
         sub_request: &ReadRequest,
         target_table: &Table,
         sub_alias: &str,
-    ) -> Result<String, QueryEngineError> {
+    ) -> Result<(String, Option<String>), QueryEngineError> {
         let join_qn = rel
             .join_table
             .as_ref()
@@ -356,8 +398,11 @@ impl<'a> SqlBuilder<'a> {
             target_join.join(" AND ")
         );
 
-        Ok(format!(
-            "COALESCE((SELECT json_agg({sub_alias}) FROM ({inner}) {sub_alias}), '[]')"
+        Ok((
+            format!(
+                "COALESCE((SELECT json_agg({sub_alias}) FROM ({inner}) {sub_alias}), '[]')"
+            ),
+            None, // M2M inner join filtering not yet implemented
         ))
     }
 
@@ -509,6 +554,14 @@ impl<'a> SqlBuilder<'a> {
                         SelectItem::Column(c) => Some(quote_ident(c)),
                         SelectItem::Cast { column, pg_type } => {
                             Some(format!("{}::{}", quote_ident(column), pg_type))
+                        }
+                        SelectItem::JsonAccess { column, path, as_text, cast } => {
+                            let op = if *as_text { "->>" } else { "->" };
+                            let expr = format!("{}{op}'{}'", quote_ident(column), path.replace('\'', "''"));
+                            Some(match cast {
+                                Some(t) => format!("({expr})::{t}"),
+                                None => expr,
+                            })
                         }
                         SelectItem::Star => Some("*".to_string()),
                         _ => None,

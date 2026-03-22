@@ -25,10 +25,20 @@ pub enum SelectItem {
     Column(String),
     /// Column with an explicit type cast: `select=name::text`
     Cast { column: String, pg_type: String },
+    /// JSON path access: `select=data->key` or `select=data->>key`
+    JsonAccess {
+        column: String,
+        path: String,
+        /// true for ->> (text), false for -> (json)
+        as_text: bool,
+        cast: Option<String>,
+    },
     Star,
     Embed {
         alias: Option<String>,
         target: String,
+        /// If true, use INNER JOIN semantics (exclude parent rows without matches).
+        inner: bool,
         sub_request: Box<ReadRequest>,
     },
 }
