@@ -57,20 +57,6 @@ pub fn g_sorted(name: &'static str, path: &'static str, auth: &str) -> TestCase 
     }
 }
 
-/// Test that both servers respond without connection error (skip status + body comparison).
-pub fn g_skip_all(name: &'static str, path: &'static str, auth: &str) -> TestCase {
-    TestCase {
-        name,
-        method: "GET",
-        path,
-        body: None,
-        headers: vec![("Authorization", format!("Bearer {auth}"))],
-        compare_body: false,
-        sort_array: false,
-        skip_status: true,
-    }
-}
-
 pub fn g_status_only(name: &'static str, path: &'static str, auth: &str) -> TestCase {
     TestCase {
         name,
