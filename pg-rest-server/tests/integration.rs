@@ -220,7 +220,7 @@ async fn test_read_filter_is_null() {
     let (status, json) = get_json(&app, "/authors?bio=is.null").await;
     assert_eq!(status, StatusCode::OK);
     let arr = json.as_array().unwrap();
-    assert!(arr.len() >= 1);
+    assert!(!arr.is_empty());
     // Carol is always in the result (seed data).
     assert!(arr.iter().any(|a| a["name"] == "Carol"));
 }

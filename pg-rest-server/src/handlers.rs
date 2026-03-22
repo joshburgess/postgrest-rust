@@ -33,10 +33,17 @@ enum ReturnPreference {
     Representation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandlingMode {
+    Lenient,
+    Strict,
+}
+
 struct Preferences {
     return_pref: ReturnPreference,
     count: CountOption,
     resolution: Option<ConflictAction>,
+    handling: HandlingMode,
 }
 
 fn parse_prefer(headers: &HeaderMap) -> Preferences {
@@ -44,6 +51,7 @@ fn parse_prefer(headers: &HeaderMap) -> Preferences {
         return_pref: ReturnPreference::Minimal,
         count: CountOption::None,
         resolution: None,
+        handling: HandlingMode::Lenient,
     };
 
     for value in headers.get_all("prefer") {
@@ -62,6 +70,8 @@ fn parse_prefer(headers: &HeaderMap) -> Preferences {
                     "resolution=ignore-duplicates" => {
                         prefs.resolution = Some(ConflictAction::IgnoreDuplicates)
                     }
+                    "handling=strict" => prefs.handling = HandlingMode::Strict,
+                    "handling=lenient" => prefs.handling = HandlingMode::Lenient,
                     _ => {}
                 }
             }
@@ -376,6 +386,14 @@ pub async fn handle_read(
 
     let body = json.unwrap_or_else(|| "[]".to_string());
 
+    // ETag: simple hash of the response body.
+    let etag = format!("\"{}\"", simple_hash(&body));
+    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
+        if if_none_match == etag || if_none_match == "*" {
+            return Ok(StatusCode::NOT_MODIFIED.into_response());
+        }
+    }
+
     // Build Content-Range header.
     let content_range = if let Some(total) = total {
         let off = offset.unwrap_or(0);
@@ -420,6 +438,7 @@ pub async fn handle_read(
         [
             (header::CONTENT_TYPE.as_str(), content_type),
             ("content-range", &content_range),
+            (header::ETAG.as_str(), &etag),
         ],
         response_body,
     )
@@ -449,6 +468,9 @@ pub async fn handle_insert(
     let rows = body_to_rows(body)?;
     let returning = if prefs.return_pref == ReturnPreference::Representation {
         vec!["*".to_string()]
+    } else if !table_meta.primary_key.is_empty() {
+        // Return PK columns for the Location header even on minimal return.
+        table_meta.primary_key.clone()
     } else {
         Vec::new()
     };
@@ -474,15 +496,46 @@ pub async fn handle_insert(
     )
     .await?;
 
-    match (prefs.return_pref, json) {
-        (ReturnPreference::Representation, Some(j)) => Ok((
+    // Build Location header from PK of the first inserted row.
+    let location = json.as_deref().and_then(|body| {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(body).ok()?;
+        let first = arr.first()?;
+        let pk_filter: Vec<String> = table_meta
+            .primary_key
+            .iter()
+            .filter_map(|pk| {
+                let val = first.get(pk)?;
+                let val_str = match val {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                Some(format!("{pk}=eq.{val_str}"))
+            })
+            .collect();
+        if pk_filter.is_empty() {
+            None
+        } else {
+            Some(format!("/{table}?{}", pk_filter.join("&")))
+        }
+    });
+
+    let mut resp = match (prefs.return_pref, json) {
+        (ReturnPreference::Representation, Some(j)) => (
             StatusCode::CREATED,
             [(header::CONTENT_TYPE, "application/json")],
             j,
         )
-            .into_response()),
-        _ => Ok(StatusCode::CREATED.into_response()),
+            .into_response(),
+        _ => StatusCode::CREATED.into_response(),
+    };
+
+    if let Some(loc) = location {
+        if let Ok(val) = loc.parse() {
+            resp.headers_mut().insert(header::LOCATION, val);
+        }
     }
+
+    Ok(resp)
 }
 
 pub async fn handle_update(
@@ -864,6 +917,16 @@ fn csv_escape(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Simple FNV-1a hash for ETag generation (not cryptographic).
+fn simple_hash(s: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in s.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// Quickly count top-level elements of a JSON array string without full parsing.

@@ -331,11 +331,10 @@ async fn load_functions(
 
         // Build parameter list, filtering to IN/INOUT/VARIADIC only.
         let has_modes = !arg_modes.is_empty();
-        let total = arg_type_names.len();
         let mut params = Vec::new();
         let mut in_count: i32 = 0;
 
-        for i in 0..total {
+        for (i, type_name) in arg_type_names.iter().enumerate() {
             let mode = if has_modes {
                 arg_modes.get(i).map(|s| s.as_str()).unwrap_or("i")
             } else {
@@ -348,7 +347,7 @@ async fn load_functions(
                         .get(i)
                         .and_then(|n| n.clone())
                         .unwrap_or_default(),
-                    pg_type: arg_type_names[i].clone(),
+                    pg_type: type_name.clone(),
                     has_default: in_count > (num_args - num_defaults),
                 });
             }
