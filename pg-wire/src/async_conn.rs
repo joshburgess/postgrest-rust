@@ -57,6 +57,14 @@ pub struct AsyncConn {
     request_tx: mpsc::Sender<PipelineRequest>,
     stmt_cache: std::sync::Mutex<std::collections::HashMap<String, (String, u64)>>,
     stmt_counter: std::sync::atomic::AtomicU64,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AsyncConn {
+    /// Check if the connection is still alive (writer/reader tasks running).
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 struct PendingResponse {
@@ -71,25 +79,37 @@ impl AsyncConn {
         let (request_tx, request_rx) = mpsc::channel::<PipelineRequest>(256);
         let pending: Arc<Mutex<VecDeque<PendingResponse>>> =
             Arc::new(Mutex::new(VecDeque::new()));
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let (stream_read, stream_write) = tokio::io::split(conn.into_stream());
 
-        // Spawn writer task.
+        // Spawn writer task — sets alive=false on exit.
         {
             let pending = Arc::clone(&pending);
-            tokio::spawn(writer_task(request_rx, stream_write, pending));
+            let alive = Arc::clone(&alive);
+            tokio::spawn(async move {
+                writer_task(request_rx, stream_write, pending).await;
+                alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!("pg-wire writer task exited");
+            });
         }
 
-        // Spawn reader task.
+        // Spawn reader task — sets alive=false on exit.
         {
             let pending = Arc::clone(&pending);
-            tokio::spawn(reader_task(stream_read, pending));
+            let alive_clone = Arc::clone(&alive);
+            tokio::spawn(async move {
+                reader_task(stream_read, pending).await;
+                alive_clone.store(false, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!("pg-wire reader task exited");
+            });
         }
 
         Self {
             request_tx,
             stmt_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             stmt_counter: std::sync::atomic::AtomicU64::new(0),
+            alive,
         }
     }
 
