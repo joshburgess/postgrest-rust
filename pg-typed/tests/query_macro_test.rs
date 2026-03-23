@@ -193,3 +193,31 @@ async fn test_query_scalar_bool() {
         .unwrap();
     assert!(exists);
 }
+
+// ---------------------------------------------------------------------------
+// query_file! and query_file_as! macros
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_query_file() {
+    let client = connect().await;
+    let id = 1i32;
+    let row = pg_typed::query_file!("tests/sql/get_author.sql", id)
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert_eq!(row.id, 1);
+    assert_eq!(row.name, "Alice");
+}
+
+#[tokio::test]
+async fn test_query_file_as() {
+    let client = connect().await;
+    let id = 1i32;
+    let author = pg_typed::query_file_as!(MacroAuthor, "tests/sql/get_author.sql", id)
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert_eq!(author.id, 1);
+    assert_eq!(author.name, "Alice");
+}

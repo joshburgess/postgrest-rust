@@ -14,6 +14,7 @@ mod checked;
 mod decode;
 mod encode;
 mod error;
+pub mod newtypes;
 mod oid;
 mod pooled;
 mod query;
@@ -35,5 +36,10 @@ pub use pg_typed_macros::query;
 pub use pg_typed_macros::query_as;
 /// Compile-time checked single-scalar query.
 pub use pg_typed_macros::query_scalar;
+/// Like query! but reads SQL from a file.
+pub use pg_typed_macros::query_file;
+/// Like query_as! but reads SQL from a file.
+pub use pg_typed_macros::query_file_as;
 pub use types::TypeInfo;
+pub use newtypes::{PgNumeric, PgInet};
 pub use pooled::{TypedPool, PooledTypedClient};

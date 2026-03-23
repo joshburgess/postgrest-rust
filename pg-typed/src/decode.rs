@@ -115,6 +115,227 @@ impl Decode for Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Newtype wrappers (numeric, inet)
+// ---------------------------------------------------------------------------
+
+impl Decode for crate::newtypes::PgNumeric {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        // PG binary numeric: ndigits(i16) weight(i16) sign(i16) dscale(i16) digits[](i16)
+        if buf.len() < 8 {
+            return Err(TypedError::Decode {
+                column: 0,
+                message: format!("PgNumeric: expected >= 8 bytes, got {}", buf.len()),
+            });
+        }
+        let ndigits = i16::from_be_bytes([buf[0], buf[1]]) as usize;
+        let weight = i16::from_be_bytes([buf[2], buf[3]]);
+        let sign = i16::from_be_bytes([buf[4], buf[5]]);
+        let dscale = i16::from_be_bytes([buf[6], buf[7]]) as usize;
+
+        if buf.len() < 8 + ndigits * 2 {
+            return Err(TypedError::Decode {
+                column: 0,
+                message: "PgNumeric: truncated digit data".into(),
+            });
+        }
+
+        // Special cases.
+        if ndigits == 0 {
+            return if dscale > 0 {
+                let zeros: String = std::iter::repeat('0').take(dscale).collect();
+                Ok(crate::newtypes::PgNumeric(format!("0.{zeros}")))
+            } else {
+                Ok(crate::newtypes::PgNumeric("0".into()))
+            };
+        }
+
+        let mut digits = Vec::with_capacity(ndigits);
+        for i in 0..ndigits {
+            let off = 8 + i * 2;
+            digits.push(i16::from_be_bytes([buf[off], buf[off + 1]]));
+        }
+
+        // Build the string. Each digit is 0-9999 (base-10000).
+        // weight = position of first digit group (0 = units, 1 = ten-thousands, etc.).
+        let mut result = String::new();
+        if sign == 0x4000 {
+            result.push('-');
+        }
+
+        // Integer part: digit groups at positions weight down to 0.
+        let int_groups = (weight + 1).max(0) as usize;
+        for i in 0..int_groups {
+            let d = if i < ndigits { digits[i] } else { 0 };
+            if i == 0 {
+                result.push_str(&d.to_string());
+            } else {
+                result.push_str(&format!("{d:04}"));
+            }
+        }
+        if int_groups == 0 {
+            result.push('0');
+        }
+
+        // Fractional part.
+        if dscale > 0 {
+            result.push('.');
+            let mut frac_chars = 0;
+            for i in int_groups..ndigits {
+                let d = digits[i];
+                let s = format!("{d:04}");
+                for ch in s.chars() {
+                    if frac_chars >= dscale {
+                        break;
+                    }
+                    result.push(ch);
+                    frac_chars += 1;
+                }
+            }
+            // Pad with zeros if needed.
+            while frac_chars < dscale {
+                result.push('0');
+                frac_chars += 1;
+            }
+        }
+
+        Ok(crate::newtypes::PgNumeric(result))
+    }
+}
+
+impl Decode for crate::newtypes::PgInet {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        // PG inet binary: family(u8) netmask(u8) is_cidr(u8) addr_len(u8) addr[addr_len]
+        if buf.len() < 4 {
+            return Err(TypedError::Decode {
+                column: 0,
+                message: "PgInet: too short".into(),
+            });
+        }
+        let family = buf[0];
+        let netmask = buf[1];
+        let addr_len = buf[3] as usize;
+        if buf.len() < 4 + addr_len {
+            return Err(TypedError::Decode {
+                column: 0,
+                message: "PgInet: truncated address".into(),
+            });
+        }
+        let addr = &buf[4..4 + addr_len];
+        let s = match family {
+            2 if addr_len == 4 => {
+                format!("{}.{}.{}.{}/{netmask}", addr[0], addr[1], addr[2], addr[3])
+            }
+            3 if addr_len == 16 => {
+                let mut parts = Vec::new();
+                for i in (0..16).step_by(2) {
+                    parts.push(format!("{:x}", u16::from_be_bytes([addr[i], addr[i + 1]])));
+                }
+                format!("{}/{netmask}", parts.join(":"))
+            }
+            _ => {
+                return Err(TypedError::Decode {
+                    column: 0,
+                    message: format!("PgInet: unknown family {family}"),
+                });
+            }
+        };
+        Ok(crate::newtypes::PgInet(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Array types
+// ---------------------------------------------------------------------------
+
+/// Parse a PG array header, returns (element_oid, num_elements).
+fn parse_array_header(buf: &[u8]) -> Result<(u32, usize, usize), TypedError> {
+    if buf.len() < 12 {
+        return Err(TypedError::Decode {
+            column: 0,
+            message: "array: header too short".into(),
+        });
+    }
+    let ndim = i32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    // let _has_null = i32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    let element_oid = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+    if ndim == 0 {
+        return Ok((element_oid, 0, 12)); // Empty array: just the 12-byte header.
+    }
+    if ndim != 1 {
+        return Err(TypedError::Decode {
+            column: 0,
+            message: format!("array: only 1D arrays supported, got {ndim}D"),
+        });
+    }
+    if buf.len() < 20 {
+        return Err(TypedError::Decode {
+            column: 0,
+            message: "array: 1D header too short".into(),
+        });
+    }
+    let dim_len = i32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]) as usize;
+    // skip lower_bound at bytes 16..20
+    Ok((element_oid, dim_len, 20))
+}
+
+impl Decode for Vec<i32> {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        let (_, count, mut offset) = parse_array_header(buf)?;
+        let mut result = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = i32::from_be_bytes([buf[offset], buf[offset+1], buf[offset+2], buf[offset+3]]);
+            offset += 4;
+            if len == -1 {
+                return Err(TypedError::Decode { column: 0, message: "array: unexpected NULL in Vec<i32>".into() });
+            }
+            result.push(i32::from_be_bytes([buf[offset], buf[offset+1], buf[offset+2], buf[offset+3]]));
+            offset += 4;
+        }
+        Ok(result)
+    }
+}
+
+impl Decode for Vec<i64> {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        let (_, count, mut offset) = parse_array_header(buf)?;
+        let mut result = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = i32::from_be_bytes([buf[offset], buf[offset+1], buf[offset+2], buf[offset+3]]);
+            offset += 4;
+            if len == -1 {
+                return Err(TypedError::Decode { column: 0, message: "array: unexpected NULL in Vec<i64>".into() });
+            }
+            result.push(i64::from_be_bytes([
+                buf[offset], buf[offset+1], buf[offset+2], buf[offset+3],
+                buf[offset+4], buf[offset+5], buf[offset+6], buf[offset+7],
+            ]));
+            offset += 8;
+        }
+        Ok(result)
+    }
+}
+
+impl Decode for Vec<String> {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        let (_, count, mut offset) = parse_array_header(buf)?;
+        let mut result = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = i32::from_be_bytes([buf[offset], buf[offset+1], buf[offset+2], buf[offset+3]]);
+            offset += 4;
+            if len == -1 {
+                return Err(TypedError::Decode { column: 0, message: "array: unexpected NULL in Vec<String>".into() });
+            }
+            let len = len as usize;
+            let s = String::from_utf8(buf[offset..offset+len].to_vec())
+                .map_err(|e| TypedError::Decode { column: 0, message: format!("array: {e}") })?;
+            result.push(s);
+            offset += len;
+        }
+        Ok(result)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Chrono types (behind "chrono" feature)
 // ---------------------------------------------------------------------------
 
@@ -345,5 +566,59 @@ impl DecodeText for uuid::Uuid {
             column: 0,
             message: format!("UUID: {e}"),
         })
+    }
+}
+
+impl DecodeText for crate::newtypes::PgNumeric {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        Ok(crate::newtypes::PgNumeric(s.to_string()))
+    }
+}
+
+impl DecodeText for crate::newtypes::PgInet {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        Ok(crate::newtypes::PgInet(s.to_string()))
+    }
+}
+
+impl DecodeText for Vec<i32> {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        // PG text array: {1,2,3}
+        let inner = s.trim_start_matches('{').trim_end_matches('}');
+        if inner.is_empty() { return Ok(Vec::new()); }
+        inner.split(',')
+            .map(|v| v.trim().parse::<i32>().map_err(|_| TypedError::Decode {
+                column: 0, message: format!("array element: {v:?}"),
+            }))
+            .collect()
+    }
+}
+
+impl DecodeText for Vec<i64> {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        let inner = s.trim_start_matches('{').trim_end_matches('}');
+        if inner.is_empty() { return Ok(Vec::new()); }
+        inner.split(',')
+            .map(|v| v.trim().parse::<i64>().map_err(|_| TypedError::Decode {
+                column: 0, message: format!("array element: {v:?}"),
+            }))
+            .collect()
+    }
+}
+
+impl DecodeText for Vec<String> {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        let inner = s.trim_start_matches('{').trim_end_matches('}');
+        if inner.is_empty() { return Ok(Vec::new()); }
+        // Simple parse — doesn't handle quoted strings with commas inside.
+        Ok(inner.split(',').map(|v| {
+            let v = v.trim();
+            // Remove surrounding quotes if present.
+            if v.starts_with('"') && v.ends_with('"') {
+                v[1..v.len()-1].replace("\\\"", "\"").to_string()
+            } else {
+                v.to_string()
+            }
+        }).collect())
     }
 }

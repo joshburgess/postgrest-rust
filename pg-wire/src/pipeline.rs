@@ -101,6 +101,21 @@ impl PgPipeline {
         Ok(())
     }
 
+    /// Execute a simple query and return rows (text format).
+    /// Used for introspection queries (e.g., migration status).
+    pub async fn simple_query_rows(
+        &mut self,
+        sql: &str,
+    ) -> Result<(Vec<Vec<Option<Vec<u8>>>>, String), PgWireError> {
+        self.send_buf.clear();
+        frontend::encode_message(
+            &FrontendMsg::Query(sql.as_bytes()),
+            &mut self.send_buf,
+        );
+        self.conn.send_raw(&self.send_buf).await?;
+        self.conn.collect_rows().await
+    }
+
     /// Execute a pipelined transaction: setup (simple) + query (parameterized) in TWO messages
     /// but coalesced into ONE TCP write.
     ///

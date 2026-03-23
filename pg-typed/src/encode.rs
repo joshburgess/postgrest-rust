@@ -110,8 +110,70 @@ impl Encode for Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// Option<T>: NULL encoding
+// Newtype wrappers (numeric, inet)
 // ---------------------------------------------------------------------------
+
+impl Encode for crate::newtypes::PgNumeric {
+    fn type_oid(&self) -> TypeOid { TypeOid::Numeric }
+    fn encode(&self, buf: &mut BytesMut) {
+        // Send as text — PG accepts text-format numeric in binary protocol
+        // when the OID is set to numeric.
+        buf.put_slice(self.0.as_bytes());
+    }
+}
+
+impl Encode for crate::newtypes::PgInet {
+    fn type_oid(&self) -> TypeOid { TypeOid::Inet }
+    fn encode(&self, buf: &mut BytesMut) {
+        buf.put_slice(self.0.as_bytes());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Array types: Vec<i32>, Vec<i64>, Vec<String>
+// ---------------------------------------------------------------------------
+
+/// Encode a PG array header: ndim=1, has_null, element_oid, dim_len, lower_bound=1.
+fn encode_array_header(buf: &mut BytesMut, has_null: bool, element_oid: u32, len: usize) {
+    buf.put_i32(1); // ndim
+    buf.put_i32(if has_null { 1 } else { 0 });
+    buf.put_u32(element_oid);
+    buf.put_i32(len as i32); // dim length
+    buf.put_i32(1); // lower bound
+}
+
+impl Encode for Vec<i32> {
+    fn type_oid(&self) -> TypeOid { TypeOid::Int4Array }
+    fn encode(&self, buf: &mut BytesMut) {
+        encode_array_header(buf, false, 23, self.len());
+        for v in self {
+            buf.put_i32(4); // element length
+            buf.put_i32(*v);
+        }
+    }
+}
+
+impl Encode for Vec<i64> {
+    fn type_oid(&self) -> TypeOid { TypeOid::Int8Array }
+    fn encode(&self, buf: &mut BytesMut) {
+        encode_array_header(buf, false, 20, self.len());
+        for v in self {
+            buf.put_i32(8);
+            buf.put_i64(*v);
+        }
+    }
+}
+
+impl Encode for Vec<String> {
+    fn type_oid(&self) -> TypeOid { TypeOid::TextArray }
+    fn encode(&self, buf: &mut BytesMut) {
+        encode_array_header(buf, false, 25, self.len());
+        for v in self {
+            buf.put_i32(v.len() as i32);
+            buf.put_slice(v.as_bytes());
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Chrono types (behind "chrono" feature)

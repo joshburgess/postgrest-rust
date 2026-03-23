@@ -1,8 +1,14 @@
-//! CLI tool for pg-typed offline cache management.
+//! CLI tool for pg-typed: offline cache management and database migrations.
 //!
 //! Usage:
-//!   pg-typed-cli prepare    # Scan source files, connect to DB, cache query metadata
-//!   pg-typed-cli check      # Verify all cached queries are still valid
+//!   pg-typed-cli prepare               # Cache query metadata for offline builds
+//!   pg-typed-cli check                 # Verify cached queries against DB
+//!   pg-typed-cli migrate create <name> # Create a new migration
+//!   pg-typed-cli migrate run           # Run pending migrations
+//!   pg-typed-cli migrate revert        # Revert the last migration
+//!   pg-typed-cli migrate status        # Show migration status
+
+mod migrate;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -31,6 +37,44 @@ enum Command {
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
     },
+    /// Database migration management.
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateAction {
+    /// Create a new migration file pair (up + down).
+    Create {
+        /// Name of the migration (e.g., "create_users").
+        name: String,
+        /// Migrations directory.
+        #[arg(long, default_value = "migrations")]
+        dir: PathBuf,
+    },
+    /// Run all pending migrations.
+    Run {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+        #[arg(long, default_value = "migrations")]
+        dir: PathBuf,
+    },
+    /// Revert the last applied migration.
+    Revert {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+        #[arg(long, default_value = "migrations")]
+        dir: PathBuf,
+    },
+    /// Show which migrations are applied.
+    Status {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+        #[arg(long, default_value = "migrations")]
+        dir: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +101,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Check { database_url } => {
             check(&database_url).await?;
         }
+        Command::Migrate { action } => match action {
+            MigrateAction::Create { name, dir } => {
+                migrate::create(&dir, &name)?;
+            }
+            MigrateAction::Run { database_url, dir } => {
+                migrate::run(&database_url, &dir).await?;
+            }
+            MigrateAction::Revert { database_url, dir } => {
+                migrate::revert(&database_url, &dir).await?;
+            }
+            MigrateAction::Status { database_url, dir } => {
+                migrate::status(&database_url, &dir).await?;
+            }
+        },
     }
     Ok(())
 }
@@ -229,7 +287,7 @@ fn scan_dir(dir: &Path, queries: &mut Vec<String>) -> Result<(), Box<dyn std::er
 fn scan_file(path: &Path, queries: &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(path)?;
     // Search for all three macro patterns.
-    for pattern in &["query!(", "query_as!(", "query_scalar!("] {
+    for pattern in &["query!(", "query_as!(", "query_scalar!(", "query_file!(", "query_file_as!("] {
         let mut pos = 0;
         while let Some(idx) = source[pos..].find(pattern) {
             let after_paren = pos + idx + pattern.len();
@@ -256,8 +314,26 @@ fn scan_file(path: &Path, queries: &mut Vec<String>) -> Result<(), Box<dyn std::
             let actual_start = source.len() - trimmed.len();
             let quote_start = actual_start + 1; // After the `"`
             if let Some(end) = find_string_end(&source, quote_start) {
-                let sql = &source[quote_start..end];
-                let sql = sql.replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\");
+                let raw = &source[quote_start..end];
+                let raw = raw.replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\");
+
+                // For query_file! variants, raw is a file path — read the SQL.
+                let sql = if pattern.starts_with("query_file") {
+                    let manifest_dir = path.parent().unwrap_or(Path::new("."));
+                    // Walk up to find CARGO_MANIFEST_DIR equivalent.
+                    let crate_root = find_crate_root(manifest_dir);
+                    let full_path = crate_root.join(&raw);
+                    match std::fs::read_to_string(&full_path) {
+                        Ok(s) => s.trim().to_string(),
+                        Err(_) => {
+                            // Try relative to source dir root.
+                            raw
+                        }
+                    }
+                } else {
+                    raw
+                };
+
                 queries.push(sql);
                 pos = end + 1;
             } else {
@@ -293,7 +369,7 @@ fn hash_sql(sql: &str) -> u64 {
     h
 }
 
-fn parse_pg_uri(uri: &str) -> Option<(String, String, String, u16, String)> {
+pub(crate) fn parse_pg_uri(uri: &str) -> Option<(String, String, String, u16, String)> {
     let rest = uri
         .strip_prefix("postgres://")
         .or_else(|| uri.strip_prefix("postgresql://"))?;
@@ -309,6 +385,23 @@ fn parse_pg_uri(uri: &str) -> Option<(String, String, String, u16, String)> {
         port,
         database.to_string(),
     ))
+}
+
+/// Find the crate root (directory containing Cargo.toml) by walking up.
+fn find_crate_root(start: &Path) -> PathBuf {
+    let mut dir = if start.is_file() {
+        start.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        if dir.join("Cargo.toml").exists() {
+            return dir;
+        }
+        if !dir.pop() {
+            return start.to_path_buf();
+        }
+    }
 }
 
 fn find_workspace_root(start: &Path) -> Option<PathBuf> {

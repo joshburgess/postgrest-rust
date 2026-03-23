@@ -35,6 +35,9 @@ pub enum TypeOid {
     Float8Array = 1022,
     TextArray = 1009,
     VarcharArray = 1015,
+    Numeric = 1700,
+    Inet = 869,
+    Cidr = 650,
 }
 
 impl TypeOid {

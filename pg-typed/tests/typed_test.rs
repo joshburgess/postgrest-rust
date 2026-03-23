@@ -776,3 +776,126 @@ fn test_encode_decode_jsonb() {
     let decoded: serde_json::Value = serde_json::Value::decode(&buf).unwrap();
     assert_eq!(decoded, val);
 }
+
+// ---------------------------------------------------------------------------
+// Array types
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_int_array() {
+    let client = connect().await;
+    let arr = vec![1i32, 2, 3, 4, 5];
+    let rows = client
+        .query("SELECT $1::int4[] AS arr", &[&arr])
+        .await
+        .unwrap();
+    let result: Vec<i32> = rows[0].get(0).unwrap();
+    assert_eq!(result, vec![1, 2, 3, 4, 5]);
+}
+
+#[tokio::test]
+async fn test_bigint_array() {
+    let client = connect().await;
+    let arr = vec![100i64, 200, 300];
+    let rows = client
+        .query("SELECT $1::int8[] AS arr", &[&arr])
+        .await
+        .unwrap();
+    let result: Vec<i64> = rows[0].get(0).unwrap();
+    assert_eq!(result, vec![100, 200, 300]);
+}
+
+#[tokio::test]
+async fn test_text_array() {
+    let client = connect().await;
+    let arr = vec!["hello".to_string(), "world".to_string()];
+    let rows = client
+        .query("SELECT $1::text[] AS arr", &[&arr])
+        .await
+        .unwrap();
+    let result: Vec<String> = rows[0].get(0).unwrap();
+    assert_eq!(result, vec!["hello", "world"]);
+}
+
+#[tokio::test]
+async fn test_empty_array() {
+    let client = connect().await;
+    let arr: Vec<i32> = vec![];
+    let rows = client
+        .query("SELECT $1::int4[] AS arr", &[&arr])
+        .await
+        .unwrap();
+    let result: Vec<i32> = rows[0].get(0).unwrap();
+    assert!(result.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Numeric / Inet newtypes
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_numeric_roundtrip() {
+    let client = connect().await;
+    // PG returns numeric in binary format. We decode it to PgNumeric (string).
+    let rows = client
+        .query("SELECT 123.456::numeric AS n", &[])
+        .await
+        .unwrap();
+    let n: pg_typed::PgNumeric = rows[0].get(0).unwrap();
+    assert_eq!(n.0, "123.456");
+}
+
+#[tokio::test]
+async fn test_numeric_zero() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT 0::numeric AS n", &[])
+        .await
+        .unwrap();
+    let n: pg_typed::PgNumeric = rows[0].get(0).unwrap();
+    assert_eq!(n.0, "0");
+}
+
+#[tokio::test]
+async fn test_numeric_negative() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT (-99.99)::numeric AS n", &[])
+        .await
+        .unwrap();
+    let n: pg_typed::PgNumeric = rows[0].get(0).unwrap();
+    assert_eq!(n.0, "-99.99");
+}
+
+#[tokio::test]
+async fn test_inet_roundtrip() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT '192.168.1.1/24'::inet AS addr", &[])
+        .await
+        .unwrap();
+    let addr: pg_typed::PgInet = rows[0].get(0).unwrap();
+    assert_eq!(addr.0, "192.168.1.1/24");
+}
+
+// ---------------------------------------------------------------------------
+// Encode/Decode unit tests for arrays
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_encode_decode_int_array() {
+    let arr = vec![10i32, 20, 30];
+    let mut buf = bytes::BytesMut::new();
+    arr.encode(&mut buf);
+    let decoded: Vec<i32> = Vec::<i32>::decode(&buf).unwrap();
+    assert_eq!(decoded, arr);
+}
+
+#[test]
+fn test_encode_decode_text_array() {
+    let arr = vec!["foo".to_string(), "bar".to_string()];
+    let mut buf = bytes::BytesMut::new();
+    arr.encode(&mut buf);
+    let decoded: Vec<String> = Vec::<String>::decode(&buf).unwrap();
+    assert_eq!(decoded, arr);
+}

@@ -1367,6 +1367,7 @@ dependencies = [
 name = "pg-typed-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "pg-wire",
  "serde",

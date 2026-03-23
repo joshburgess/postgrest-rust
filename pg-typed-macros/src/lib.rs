@@ -147,7 +147,12 @@ fn oid_to_rust_type(oid: u32) -> proc_macro2::TokenStream {
 /// `query!("SQL", param1, param2, ...)` — compile-time checked SQL query.
 #[proc_macro]
 pub fn query(input: TokenStream) -> TokenStream {
-    let QueryInput { sql, params } = parse_macro_input!(input as QueryInput);
+    let parsed = parse_macro_input!(input as QueryInput);
+    query_impl(parsed)
+}
+
+fn query_impl(input: QueryInput) -> TokenStream {
+    let QueryInput { sql, params } = input;
     let sql_str = sql.value();
 
     let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
@@ -217,12 +222,15 @@ pub fn query(input: TokenStream) -> TokenStream {
 /// mapped to an existing struct via FromRow.
 #[proc_macro]
 pub fn query_as(input: TokenStream) -> TokenStream {
-    let input2 = input.clone();
-    let QueryAsInput { target_type, sql, params } =
-        parse_macro_input!(input2 as QueryAsInput);
+    let parsed = parse_macro_input!(input as QueryAsInput);
+    query_as_impl(parsed)
+}
+
+fn query_as_impl(input: QueryAsInput) -> TokenStream {
+    let QueryAsInput { target_type, sql, params } = input;
     let sql_str = sql.value();
 
-    let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
+    let (param_oids, _column_infos) = match resolve_metadata(&sql_str) {
         Ok(result) => result,
         Err(e) => {
             return syn::Error::new_spanned(&sql, e)
@@ -346,6 +354,57 @@ impl Parse for QueryAsInput {
         }
         Ok(QueryAsInput { target_type, sql, params })
     }
+}
+
+/// `query_file!("path/to/query.sql", param1, param2, ...)` — like query! but reads SQL from a file.
+#[proc_macro]
+pub fn query_file(input: TokenStream) -> TokenStream {
+    let QueryInput { sql: path_lit, params } = parse_macro_input!(input as QueryInput);
+    let file_path = path_lit.value();
+
+    let sql_str = match read_sql_file(&file_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return syn::Error::new_spanned(&path_lit, e)
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    // Reuse the query! logic with the file contents.
+    let sql_lit = LitStr::new(&sql_str, path_lit.span());
+    let inner = QueryInput { sql: sql_lit, params };
+    query_impl(inner)
+}
+
+/// `query_file_as!(Type, "path/to/query.sql", param1, ...)` — like query_as! but reads SQL from a file.
+#[proc_macro]
+pub fn query_file_as(input: TokenStream) -> TokenStream {
+    let QueryAsInput { target_type, sql: path_lit, params } =
+        parse_macro_input!(input as QueryAsInput);
+    let file_path = path_lit.value();
+
+    let sql_str = match read_sql_file(&file_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return syn::Error::new_spanned(&path_lit, e)
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let sql_lit = LitStr::new(&sql_str, path_lit.span());
+    let inner = QueryAsInput { target_type, sql: sql_lit, params };
+    query_as_impl(inner)
+}
+
+/// Read a SQL file relative to CARGO_MANIFEST_DIR.
+fn read_sql_file(path: &str) -> Result<String, String> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+    let full_path = std::path::Path::new(&manifest_dir).join(path);
+    std::fs::read_to_string(&full_path)
+        .map_err(|e| format!("Failed to read SQL file {}: {e}", full_path.display()))
+        .map(|s| s.trim().to_string())
 }
 
 fn sanitize_ident(name: &str) -> String {
