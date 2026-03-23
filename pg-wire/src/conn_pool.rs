@@ -71,6 +71,7 @@ impl Default for ConnPoolConfig {
 // ---------------------------------------------------------------------------
 
 /// Lifecycle hook callbacks. All hooks are optional.
+#[derive(Default)]
 pub struct LifecycleHooks {
     /// Called after a new connection is created.
     pub on_create: Option<Box<dyn Fn() + Send + Sync>>,
@@ -80,17 +81,6 @@ pub struct LifecycleHooks {
     pub on_checkin: Option<Box<dyn Fn() + Send + Sync>>,
     /// Called when a connection is destroyed (expired, unhealthy, or pool drain).
     pub on_destroy: Option<Box<dyn Fn() + Send + Sync>>,
-}
-
-impl Default for LifecycleHooks {
-    fn default() -> Self {
-        Self {
-            on_create: None,
-            on_checkout: None,
-            on_checkin: None,
-            on_destroy: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +444,13 @@ impl ConnPool {
             idle.clear();
             self.total_count.fetch_sub(count, Ordering::Relaxed);
             self.total_destroyed.fetch_add(count as u64, Ordering::Relaxed);
+            if count > 0 {
+                if let Some(ref hook) = self.hooks.on_destroy {
+                    for _ in 0..count {
+                        hook();
+                    }
+                }
+            }
         }
 
         // Cancel all waiters.
@@ -544,6 +541,7 @@ impl std::ops::DerefMut for PoolGuard {
 /// 2. Replenishes to min_idle if below.
 async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<()>) {
     let mut interval = tokio::time::interval(pool.config.maintenance_interval);
+    interval.tick().await; // Skip the first immediate tick.
     loop {
         tokio::select! {
             _ = interval.tick() => {}
