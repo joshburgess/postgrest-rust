@@ -3,7 +3,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum TypedError {
     #[error("wire error: {0}")]
-    Wire(#[from] pg_wire::PgWireError),
+    Wire(#[from] Box<pg_wire::PgWireError>),
 
     #[error("decode error: column {column}: {message}")]
     Decode { column: usize, message: String },
@@ -19,4 +19,10 @@ pub enum TypedError {
 
     #[error("type mismatch: expected OID {expected}, got {actual}")]
     TypeMismatch { expected: u32, actual: u32 },
+}
+
+impl From<pg_wire::PgWireError> for TypedError {
+    fn from(e: pg_wire::PgWireError) -> Self {
+        Self::Wire(Box::new(e))
+    }
 }

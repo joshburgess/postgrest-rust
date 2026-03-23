@@ -1352,6 +1352,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "chrono",
+ "pg-pool",
  "pg-typed-derive",
  "pg-typed-macros",
  "pg-wire",

@@ -213,6 +213,141 @@ pub fn query(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+/// `query_as!(Type, "SQL", param1, param2, ...)` — compile-time checked query
+/// mapped to an existing struct via FromRow.
+#[proc_macro]
+pub fn query_as(input: TokenStream) -> TokenStream {
+    let input2 = input.clone();
+    let QueryAsInput { target_type, sql, params } =
+        parse_macro_input!(input2 as QueryAsInput);
+    let sql_str = sql.value();
+
+    let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
+        Ok(result) => result,
+        Err(e) => {
+            return syn::Error::new_spanned(&sql, e)
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    if params.len() != param_oids.len() {
+        let msg = format!(
+            "expected {} parameter(s), got {}",
+            param_oids.len(),
+            params.len()
+        );
+        return syn::Error::new_spanned(&sql, msg)
+            .to_compile_error()
+            .into();
+    }
+
+    let param_refs: Vec<_> = params
+        .iter()
+        .map(|p| quote! { &#p as &dyn pg_typed::SqlParam })
+        .collect();
+    let sql_literal = &sql;
+
+    let expanded = quote! {
+        {
+            pg_typed::CheckedQuery::<#target_type> {
+                sql: #sql_literal,
+                params: vec![#(#param_refs),*],
+                _marker: std::marker::PhantomData,
+                mapper: |row: &pg_typed::Row| -> Result<#target_type, pg_typed::TypedError> {
+                    <#target_type as pg_typed::FromRow>::from_row(row)
+                },
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// `query_scalar!("SQL", param1, ...)` — compile-time checked single-value query.
+/// Returns `CheckedQuery<T>` where T is the type of the single column.
+#[proc_macro]
+pub fn query_scalar(input: TokenStream) -> TokenStream {
+    let QueryInput { sql, params } = parse_macro_input!(input as QueryInput);
+    let sql_str = sql.value();
+
+    let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
+        Ok(result) => result,
+        Err(e) => {
+            return syn::Error::new_spanned(&sql, e)
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    if params.len() != param_oids.len() {
+        let msg = format!(
+            "expected {} parameter(s), got {}",
+            param_oids.len(),
+            params.len()
+        );
+        return syn::Error::new_spanned(&sql, msg)
+            .to_compile_error()
+            .into();
+    }
+
+    if column_infos.len() != 1 {
+        let msg = format!(
+            "query_scalar! requires exactly 1 column, got {}",
+            column_infos.len()
+        );
+        return syn::Error::new_spanned(&sql, msg)
+            .to_compile_error()
+            .into();
+    }
+
+    let scalar_type = oid_to_rust_type(column_infos[0].type_oid);
+    let param_refs: Vec<_> = params
+        .iter()
+        .map(|p| quote! { &#p as &dyn pg_typed::SqlParam })
+        .collect();
+    let sql_literal = &sql;
+
+    let expanded = quote! {
+        {
+            pg_typed::CheckedQuery::<#scalar_type> {
+                sql: #sql_literal,
+                params: vec![#(#param_refs),*],
+                _marker: std::marker::PhantomData,
+                mapper: |row: &pg_typed::Row| -> Result<#scalar_type, pg_typed::TypedError> {
+                    row.get(0)
+                },
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Input to query_as!: Type, "SQL", params...
+struct QueryAsInput {
+    target_type: syn::Type,
+    sql: LitStr,
+    params: Vec<Expr>,
+}
+
+impl Parse for QueryAsInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let target_type: syn::Type = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let sql: LitStr = input.parse()?;
+        let mut params = Vec::new();
+        while input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+            params.push(input.parse()?);
+        }
+        Ok(QueryAsInput { target_type, sql, params })
+    }
+}
+
 fn sanitize_ident(name: &str) -> String {
     let s: String = name
         .chars()

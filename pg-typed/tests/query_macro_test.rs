@@ -125,3 +125,71 @@ async fn test_query_macro_bigint() {
         .unwrap();
     assert_eq!(row.n, 9999999999i64);
 }
+
+// ---------------------------------------------------------------------------
+// query_as! macro
+// ---------------------------------------------------------------------------
+
+#[derive(pg_typed::FromRow)]
+struct MacroAuthor {
+    id: i32,
+    name: String,
+}
+
+#[tokio::test]
+async fn test_query_as_macro() {
+    let client = connect().await;
+    let id = 1i32;
+    let author = pg_typed::query_as!(MacroAuthor, "SELECT id, name FROM api.authors WHERE id = $1", id)
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert_eq!(author.id, 1);
+    assert_eq!(author.name, "Alice");
+}
+
+#[tokio::test]
+async fn test_query_as_macro_fetch_all() {
+    let client = connect().await;
+    let authors = pg_typed::query_as!(MacroAuthor, "SELECT id, name FROM api.authors ORDER BY id")
+        .fetch_all(&client)
+        .await
+        .unwrap();
+    assert!(authors.len() >= 3);
+    assert_eq!(authors[0].name, "Alice");
+}
+
+// ---------------------------------------------------------------------------
+// query_scalar! macro
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_query_scalar_count() {
+    let client = connect().await;
+    let count = pg_typed::query_scalar!("SELECT count(*)::int4 FROM api.authors")
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert!(count >= 3);
+}
+
+#[tokio::test]
+async fn test_query_scalar_with_param() {
+    let client = connect().await;
+    let id = 1i32;
+    let name = pg_typed::query_scalar!("SELECT name FROM api.authors WHERE id = $1", id)
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert_eq!(name, "Alice");
+}
+
+#[tokio::test]
+async fn test_query_scalar_bool() {
+    let client = connect().await;
+    let exists = pg_typed::query_scalar!("SELECT exists(SELECT 1 FROM api.authors WHERE id = 1)")
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert!(exists);
+}

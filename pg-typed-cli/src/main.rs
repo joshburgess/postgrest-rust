@@ -224,28 +224,45 @@ fn scan_dir(dir: &Path, queries: &mut Vec<String>) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-/// Extract SQL strings from `query!("SQL" ...)` or `pg_typed::query!("SQL" ...)`.
+/// Extract SQL strings from `query!("SQL" ...)`, `query_as!(Type, "SQL" ...)`,
+/// `query_scalar!("SQL" ...)`, and their `pg_typed::` prefixed variants.
 fn scan_file(path: &Path, queries: &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(path)?;
-    // Find `query!(` then skip whitespace to the opening `"`.
-    let mut pos = 0;
-    while let Some(idx) = source[pos..].find("query!(") {
-        let after_paren = pos + idx + 7; // After `query!(`
-        // Skip whitespace/newlines.
-        let rest = &source[after_paren..];
-        let trimmed = rest.trim_start();
-        if !trimmed.starts_with('"') {
-            pos = after_paren;
-            continue;
-        }
-        let quote_start = after_paren + (rest.len() - trimmed.len()) + 1; // After the `"`
-        if let Some(end) = find_string_end(&source, quote_start) {
-            let sql = &source[quote_start..end];
-            let sql = sql.replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\");
-            queries.push(sql);
-            pos = end + 1;
-        } else {
-            pos = quote_start;
+    // Search for all three macro patterns.
+    for pattern in &["query!(", "query_as!(", "query_scalar!("] {
+        let mut pos = 0;
+        while let Some(idx) = source[pos..].find(pattern) {
+            let after_paren = pos + idx + pattern.len();
+            let rest = &source[after_paren..];
+            let trimmed = rest.trim_start();
+
+            // For query_as!, skip the type argument and comma first.
+            let trimmed = if *pattern == "query_as!(" && !trimmed.starts_with('"') {
+                // Skip to the first comma, then trim again.
+                if let Some(comma_pos) = trimmed.find(',') {
+                    trimmed[comma_pos + 1..].trim_start()
+                } else {
+                    pos = after_paren;
+                    continue;
+                }
+            } else {
+                trimmed
+            };
+
+            if !trimmed.starts_with('"') {
+                pos = after_paren;
+                continue;
+            }
+            let actual_start = source.len() - trimmed.len();
+            let quote_start = actual_start + 1; // After the `"`
+            if let Some(end) = find_string_end(&source, quote_start) {
+                let sql = &source[quote_start..end];
+                let sql = sql.replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\");
+                queries.push(sql);
+                pos = end + 1;
+            } else {
+                pos = after_paren;
+            }
         }
     }
     Ok(())

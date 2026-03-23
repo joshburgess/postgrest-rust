@@ -9,7 +9,7 @@ use pg_wire::protocol::frontend;
 use pg_wire::protocol::types::{FormatCode, FrontendMsg};
 use pg_wire::{AsyncConn, PipelineResponse, ResponseCollector, WireConn};
 
-use crate::encode::{Encode, SqlParam};
+use crate::encode::SqlParam;
 use crate::error::TypedError;
 use crate::row::Row;
 
@@ -17,15 +17,6 @@ use crate::row::Row;
 /// Sends parameters in binary format and requests binary results.
 pub struct Client {
     conn: AsyncConn,
-    /// Cached RowDescription for statement cache hits.
-    row_desc_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<ColMeta>>>,
-}
-
-#[derive(Clone)]
-struct ColMeta {
-    name: String,
-    type_oid: u32,
-    format: i16,
 }
 
 impl Client {
@@ -33,16 +24,12 @@ impl Client {
     pub fn new(conn: WireConn) -> Self {
         Self {
             conn: AsyncConn::new(conn),
-            row_desc_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     /// Create from an existing AsyncConn.
     pub fn from_async_conn(conn: AsyncConn) -> Self {
-        Self {
-            conn,
-            row_desc_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-        }
+        Self { conn }
     }
 
     /// Connect to PostgreSQL and create a typed client.

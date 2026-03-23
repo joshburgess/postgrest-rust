@@ -15,6 +15,7 @@ mod decode;
 mod encode;
 mod error;
 mod oid;
+mod pooled;
 mod query;
 mod row;
 mod types;
@@ -30,4 +31,9 @@ pub use row::{Row, FromRow};
 pub use pg_typed_derive::FromRow;
 /// Compile-time checked query macro. Requires `DATABASE_URL` env var.
 pub use pg_typed_macros::query;
+/// Compile-time checked query mapped to an existing struct via FromRow.
+pub use pg_typed_macros::query_as;
+/// Compile-time checked single-scalar query.
+pub use pg_typed_macros::query_scalar;
 pub use types::TypeInfo;
+pub use pooled::{TypedPool, PooledTypedClient};

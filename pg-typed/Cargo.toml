@@ -7,6 +7,7 @@ edition = "2021"
 pg-wire = { path = "../pg-wire" }
 pg-typed-derive = { path = "../pg-typed-derive" }
 pg-typed-macros = { path = "../pg-typed-macros" }
+pg-pool = { path = "../pg-pool" }
 bytes = "1"
 thiserror = "2"
 tracing = "0.1"
