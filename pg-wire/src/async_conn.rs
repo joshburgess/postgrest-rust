@@ -385,25 +385,36 @@ async fn writer_task(
             });
         }
 
-        // Enqueue pending responses for the reader (FIFO order).
+        // ONE write() syscall for all coalesced messages.
+        // Write BEFORE enqueuing pending responses — if the write fails,
+        // we send errors to callers instead of leaving them hanging.
+        let write_result = stream.write_all(&write_buf).await;
+        let write_err = match write_result {
+            Ok(_) => stream.flush().await.err(),
+            Err(e) => Some(e),
+        };
+
+        if let Some(e) = write_err {
+            tracing::error!("Writer error: {e}");
+            let msg = e.to_string();
+            for p in batch {
+                let _ = p.response_tx.send(Err(PgWireError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    msg.clone(),
+                ))));
+            }
+            return;
+        }
+
+        // Write succeeded — enqueue pending responses for the reader.
         {
             let mut pq = pending.lock().await;
             for p in batch {
                 pq.push_back(p);
             }
         }
-        // Wake the reader task so it can process the newly enqueued responses.
+        // Wake the reader task to process the newly enqueued responses.
         pending_notify.notify_one();
-
-        // ONE write() syscall for all coalesced messages.
-        if let Err(e) = stream.write_all(&write_buf).await {
-            tracing::error!("Writer error: {e}");
-            return;
-        }
-        if let Err(e) = stream.flush().await {
-            tracing::error!("Writer flush error: {e}");
-            return;
-        }
     }
 }
 

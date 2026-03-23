@@ -621,7 +621,7 @@ fn jittered_duration(base: Duration, jitter: Duration) -> Duration {
     // Simple pseudo-random jitter using thread-local fast RNG.
     let offset = fastrand_u64() % (jitter_ms * 2 + 1);
     let jittered = base.as_millis() as i128 + offset as i128 - jitter_ms as i128;
-    Duration::from_millis(jittered.max(1000) as u64)
+    Duration::from_millis(jittered.max(1) as u64)
 }
 
 /// Fast pseudo-random u64 using a simple xorshift on thread-local state.

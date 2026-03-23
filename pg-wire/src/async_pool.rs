@@ -39,6 +39,9 @@ impl AsyncPool {
         database: &str,
         size: usize,
     ) -> Result<Arc<Self>, PgWireError> {
+        if size == 0 {
+            return Err(PgWireError::Protocol("pool size must be >= 1".into()));
+        }
         let config = ConnConfig {
             addr: addr.to_string(),
             user: user.to_string(),
@@ -70,42 +73,7 @@ impl AsyncPool {
         Ok(pool)
     }
 
-    /// Get the next alive AsyncConn via round-robin (non-blocking best-effort).
-    /// Tries `try_read()` on each slot. If all slots are locked (reconnecting),
-    /// returns the last successfully read connection regardless of alive status.
-    pub fn get(&self) -> Arc<AsyncConn> {
-        let len = self.conns.len();
-        let start = self.counter.fetch_add(1, Ordering::Relaxed) % len;
-        let mut fallback: Option<Arc<AsyncConn>> = None;
-
-        for i in 0..len {
-            let idx = (start + i) % len;
-            if let Ok(conn) = self.conns[idx].try_read() {
-                if conn.is_alive() {
-                    return Arc::clone(&conn);
-                }
-                fallback = Some(Arc::clone(&conn));
-            }
-        }
-
-        // All alive connections are locked or dead. Return any we could read.
-        if let Some(conn) = fallback {
-            return conn;
-        }
-
-        // Absolute last resort: all slots locked. Spin-try until one unlocks.
-        loop {
-            for i in 0..len {
-                let idx = (start + i) % len;
-                if let Ok(conn) = self.conns[idx].try_read() {
-                    return Arc::clone(&conn);
-                }
-            }
-            std::hint::spin_loop();
-        }
-    }
-
-    /// Get the next alive AsyncConn (async version for use in async contexts).
+    /// Get the next alive AsyncConn via round-robin.
     pub async fn get_async(&self) -> Arc<AsyncConn> {
         let len = self.conns.len();
         let start = self.counter.fetch_add(1, Ordering::Relaxed) % len;

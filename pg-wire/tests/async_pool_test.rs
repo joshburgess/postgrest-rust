@@ -41,6 +41,12 @@ async fn test_pool_connect_invalid_address() {
     assert!(result.is_err(), "invalid address should fail");
 }
 
+#[tokio::test]
+async fn test_pool_connect_size_zero_rejected() {
+    let result = AsyncPool::connect(ADDR, USER, PASS, DB, 0).await;
+    assert!(result.is_err(), "size=0 should be rejected");
+}
+
 // ---------------------------------------------------------------------------
 // Basic query execution
 // ---------------------------------------------------------------------------
