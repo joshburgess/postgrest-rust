@@ -286,6 +286,105 @@ fn extract_simple_query_result(
 // Execute helper
 // ---------------------------------------------------------------------------
 
+/// Execute via pg-wire: binary protocol pipelining.
+/// Auth path: BEGIN + SET LOCAL ROLE + set_config + parameterized query + COMMIT
+/// in ONE TCP write with binary-safe parameters.
+/// Anon path: just the parameterized query (1 round trip).
+async fn execute_wire(
+    wire_pool: &std::sync::Arc<pg_wire::Pool>,
+    claims: &Option<JwtClaims>,
+    anon_role: &str,
+    sql: &SqlOutput,
+) -> Result<Option<String>, ApiError> {
+    let mut conn = wire_pool
+        .get()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("pg-wire pool error: {e}")))?;
+
+    // Build binary params: all are text-encoded (same as before).
+    let param_bytes: Vec<Vec<u8>> = sql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
+    let param_refs: Vec<Option<&[u8]>> = param_bytes.iter().map(|b| Some(b.as_slice())).collect();
+    // OID 0 = let server infer types (works with our ::type casts in SQL).
+    let param_oids: Vec<u32> = vec![0; sql.params.len()];
+
+    if claims.is_none() {
+        // Anon: pipeline SET ROLE + parameterized query (no JWT claims, no full txn).
+        let quoted_role = format!("\"{}\"", anon_role.replace('"', "\"\""));
+        let setup = format!("BEGIN; SET LOCAL ROLE {quoted_role}");
+        let rows = conn
+            .pipeline_transaction(&setup, &sql.sql, &param_refs, &param_oids)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("pg-wire query error: {e}")))?;
+        let json = rows
+            .first()
+            .and_then(|r| r.first())
+            .and_then(|c| c.as_ref())
+            .map(|b| String::from_utf8_lossy(b).into_owned());
+        return Ok(json);
+    }
+
+    // Authenticated: pipeline transaction.
+    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or(anon_role);
+    let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
+
+    let setup_sql = if let Some(claims) = claims {
+        let escaped = claims.raw.replace('\'', "''");
+        format!(
+            "BEGIN; SET LOCAL ROLE {quoted_role}; \
+             SELECT set_config('request.jwt.claims', '{escaped}', true)"
+        )
+    } else {
+        format!("BEGIN; SET LOCAL ROLE {quoted_role}")
+    };
+
+    let rows = conn
+        .pipeline_transaction(&setup_sql, &sql.sql, &param_refs, &param_oids)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("pg-wire pipeline error: {e}")))?;
+
+    let json = rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(|c| c.as_ref())
+        .map(|b| String::from_utf8_lossy(b).into_owned());
+    Ok(json)
+}
+
+/// Execute via pg-wire with optional count query.
+async fn execute_wire_with_count(
+    wire_pool: &std::sync::Arc<pg_wire::Pool>,
+    claims: &Option<JwtClaims>,
+    anon_role: &str,
+    sql: &SqlOutput,
+    count_sql: Option<&SqlOutput>,
+) -> Result<(Option<String>, Option<i64>), ApiError> {
+    // For now, execute data query via wire, count via a separate call.
+    let json = execute_wire(wire_pool, claims, anon_role, sql).await?;
+
+    let total = if let Some(csql) = count_sql {
+        let mut conn = wire_pool
+            .get()
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("pg-wire pool error: {e}")))?;
+        let cp: Vec<Vec<u8>> = csql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
+        let cpr: Vec<Option<&[u8]>> = cp.iter().map(|b| Some(b.as_slice())).collect();
+        let co: Vec<u32> = vec![0; csql.params.len()];
+        let rows = conn
+            .query(&csql.sql, &cpr, &co)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("pg-wire count error: {e}")))?;
+        rows.first()
+            .and_then(|r| r.first())
+            .and_then(|c| c.as_ref())
+            .and_then(|b| String::from_utf8_lossy(b).parse::<i64>().ok())
+    } else {
+        None
+    };
+
+    Ok((json, total))
+}
+
+// Legacy execute helpers (kept for fallback/schema cache which uses tokio-postgres).
 async fn execute_with_role(
     pool: &deadpool_postgres::Pool,
     claims: &Option<JwtClaims>,
@@ -544,8 +643,8 @@ pub async fn handle_read(
         None
     };
 
-    let (json, total) = execute_with_count(
-        &state.pool,
+    let (json, total) = execute_wire_with_count(
+        &state.wire_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -665,8 +764,8 @@ pub async fn handle_insert(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = execute_with_role(
-        &state.pool,
+    let json = execute_wire(
+        &state.wire_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -755,8 +854,8 @@ pub async fn handle_update(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = execute_with_role(
-        &state.pool,
+    let json = execute_wire(
+        &state.wire_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -807,8 +906,8 @@ pub async fn handle_delete(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = execute_with_role(
-        &state.pool,
+    let json = execute_wire(
+        &state.wire_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -893,8 +992,8 @@ pub async fn handle_rpc(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = execute_with_role(
-        &state.pool,
+    let json = execute_wire(
+        &state.wire_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,

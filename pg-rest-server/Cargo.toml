@@ -7,6 +7,7 @@ edition = "2021"
 # Internal crates
 pg-schema-cache = { path = "../pg-schema-cache" }
 pg-query-engine = { path = "../pg-query-engine" }
+pg-wire = { path = "../pg-wire" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -1312,6 +1312,7 @@ dependencies = [
  "jsonwebtoken",
  "pg-query-engine",
  "pg-schema-cache",
+ "pg-wire",
  "rustls",
  "serde",
  "serde_json",

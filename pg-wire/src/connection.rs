@@ -161,7 +161,10 @@ impl WireConn {
         loop {
             let msg = self.recv_msg().await?;
             match msg {
-                BackendMsg::DataRow { columns } => rows.push(columns),
+                BackendMsg::DataRow { columns } => {
+                    tracing::trace!("collect_rows: DataRow with {} cols", columns.len());
+                    rows.push(columns);
+                }
                 BackendMsg::CommandComplete { tag: t } => tag = t,
                 BackendMsg::ReadyForQuery { .. } => return Ok((rows, tag)),
                 BackendMsg::ParseComplete | BackendMsg::BindComplete | BackendMsg::NoData => {}
@@ -182,6 +185,7 @@ impl WireConn {
     pub async fn drain_until_ready(&mut self) -> Result<(), PgWireError> {
         loop {
             let msg = self.recv_msg().await?;
+            tracing::trace!("drain: {:?}", std::mem::discriminant(&msg));
             if matches!(msg, BackendMsg::ReadyForQuery { .. }) {
                 return Ok(());
             }

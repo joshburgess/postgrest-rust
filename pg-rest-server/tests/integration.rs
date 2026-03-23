@@ -61,8 +61,17 @@ async fn setup() -> axum::Router {
         jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
     jwt_validation.required_spec_claims = Default::default();
 
+    let wire_pool = pg_wire::Pool::new(pg_wire::PoolConfig {
+        addr: "127.0.0.1:54322".to_string(),
+        user: DB_URI.split("//").nth(1).unwrap().split(':').next().unwrap().to_string(),
+        password: DB_URI.split(':').nth(2).unwrap().split('@').next().unwrap().to_string(),
+        database: "postgrest_test".to_string(),
+        max_size: 5,
+    });
+
     let state = Arc::new(AppState {
         pool,
+        wire_pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),

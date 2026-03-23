@@ -111,10 +111,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         v
     };
 
-    // 7. Build application state + router.
+    // 7. Create pg-wire pool for the hot path.
+    let wire_pool = {
+        // Parse postgres:// URI into components for pg-wire.
+        let uri = &config.database.uri;
+        let (user, password, host, port, database) = parse_pg_uri(uri);
+        pg_wire::Pool::new(pg_wire::PoolConfig {
+            addr: format!("{host}:{port}"),
+            user,
+            password,
+            database,
+            max_size: config.database.pool_size,
+        })
+    };
+
+    // 8. Build application state + router.
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let state = Arc::new(AppState {
         pool,
+        wire_pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),
@@ -217,4 +232,22 @@ async fn shutdown_signal() {
         .await
         .expect("failed to listen for ctrl-c");
     tracing::info!("Shutdown signal received");
+}
+
+/// Parse a postgres:// URI into (user, password, host, port, database).
+fn parse_pg_uri(uri: &str) -> (String, String, String, u16, String) {
+    // postgres://user:password@host:port/database
+    let rest = uri.strip_prefix("postgres://").unwrap_or(uri);
+    let (auth, hostdb) = rest.split_once('@').unwrap_or(("postgres:postgres", rest));
+    let (user, password) = auth.split_once(':').unwrap_or((auth, ""));
+    let (hostport, database) = hostdb.split_once('/').unwrap_or((hostdb, "postgres"));
+    let (host, port_str) = hostport.split_once(':').unwrap_or((hostport, "5432"));
+    let port: u16 = port_str.parse().unwrap_or(5432);
+    (
+        user.to_string(),
+        password.to_string(),
+        host.to_string(),
+        port,
+        database.to_string(),
+    )
 }

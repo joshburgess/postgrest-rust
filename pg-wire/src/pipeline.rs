@@ -45,7 +45,9 @@ impl PgPipeline {
         // Build all messages into one buffer.
         self.send_buf.clear();
 
-        let binary_fmts: Vec<FormatCode> = vec![FormatCode::Binary; params.len().max(1)];
+        // Send params as Text format — our values are text strings that PostgreSQL
+        // casts via ($1::text)::target_type in the SQL.
+        let text_fmts: Vec<FormatCode> = vec![FormatCode::Text; params.len().max(1)];
         let result_fmts = [FormatCode::Text]; // Text for JSON result
 
         let mut msgs: Vec<FrontendMsg<'_>> = Vec::with_capacity(4);
@@ -61,7 +63,7 @@ impl PgPipeline {
         msgs.push(FrontendMsg::Bind {
             portal: b"",
             statement: &stmt_name_bytes,
-            param_formats: &binary_fmts[..params.len()],
+            param_formats: &text_fmts[..params.len()],
             params,
             result_formats: &result_fmts,
         });
@@ -123,7 +125,9 @@ impl PgPipeline {
         );
 
         // 2. Extended query for data (Parse? + Bind + Execute + Sync).
-        let binary_fmts: Vec<FormatCode> = vec![FormatCode::Binary; params.len().max(1)];
+        // Send params as Text format — our values are text strings that PostgreSQL
+        // casts via ($1::text)::target_type in the SQL.
+        let text_fmts: Vec<FormatCode> = vec![FormatCode::Text; params.len().max(1)];
         let result_fmts = [FormatCode::Text];
 
         if needs_parse {
@@ -141,7 +145,7 @@ impl PgPipeline {
             &FrontendMsg::Bind {
                 portal: b"",
                 statement: &stmt_name_bytes,
-                param_formats: &binary_fmts[..params.len()],
+                param_formats: &text_fmts[..params.len()],
                 params,
                 result_formats: &result_fmts,
             },
@@ -191,7 +195,9 @@ impl PgPipeline {
         );
 
         // 2. Extended query: Bind + Execute + Sync (parameterized, binary safe)
-        let binary_fmts: Vec<FormatCode> = vec![FormatCode::Binary; params.len().max(1)];
+        // Send params as Text format — our values are text strings that PostgreSQL
+        // casts via ($1::text)::target_type in the SQL.
+        let text_fmts: Vec<FormatCode> = vec![FormatCode::Text; params.len().max(1)];
         let result_fmts = [FormatCode::Text];
 
         if needs_parse {
@@ -209,7 +215,7 @@ impl PgPipeline {
             &FrontendMsg::Bind {
                 portal: b"",
                 statement: &stmt_name_bytes,
-                param_formats: &binary_fmts[..params.len()],
+                param_formats: &text_fmts[..params.len()],
                 params,
                 result_formats: &result_fmts,
             },
