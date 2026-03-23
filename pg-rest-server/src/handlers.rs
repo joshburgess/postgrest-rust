@@ -293,7 +293,7 @@ fn extract_simple_query_result(
 /// in ONE TCP write with binary-safe parameters.
 /// Anon path: just the parameterized query (1 round trip).
 async fn execute_wire(
-    async_conn: &std::sync::Arc<pg_wire::AsyncConn>,
+    async_pool: &std::sync::Arc<pg_wire::AsyncPool>,
     claims: &Option<JwtClaims>,
     anon_role: &str,
     sql: &SqlOutput,
@@ -306,7 +306,7 @@ async fn execute_wire(
         // Anon: pipeline SET ROLE + parameterized query.
         let quoted_role = format!("\"{}\"", anon_role.replace('"', "\"\""));
         let setup = format!("BEGIN; SET LOCAL ROLE {quoted_role}");
-        let rows = async_conn
+        let rows = async_pool
             .exec_transaction(&setup, &sql.sql, &param_refs, &param_oids)
             .await
             .map_err(crate::error::map_wire_error)?;
@@ -332,7 +332,7 @@ async fn execute_wire(
         format!("BEGIN; SET LOCAL ROLE {quoted_role}")
     };
 
-    let rows = async_conn
+    let rows = async_pool
         .exec_transaction(&setup_sql, &sql.sql, &param_refs, &param_oids)
         .await
         .map_err(crate::error::map_wire_error)?;
@@ -347,19 +347,19 @@ async fn execute_wire(
 
 /// Execute via pg-wire with optional count query.
 async fn execute_wire_with_count(
-    async_conn: &std::sync::Arc<pg_wire::AsyncConn>,
+    async_pool: &std::sync::Arc<pg_wire::AsyncPool>,
     claims: &Option<JwtClaims>,
     anon_role: &str,
     sql: &SqlOutput,
     count_sql: Option<&SqlOutput>,
 ) -> Result<(Option<String>, Option<i64>), ApiError> {
-    let json = execute_wire(async_conn, claims, anon_role, sql).await?;
+    let json = execute_wire(async_pool, claims, anon_role, sql).await?;
 
     let total = if let Some(csql) = count_sql {
         let cp: Vec<Vec<u8>> = csql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
         let cpr: Vec<Option<&[u8]>> = cp.iter().map(|b| Some(b.as_slice())).collect();
         let co: Vec<u32> = vec![0; csql.params.len()];
-        let rows = async_conn
+        let rows = async_pool
             .exec_query(&csql.sql, &cpr, &co)
             .await
             .map_err(crate::error::map_wire_error)?;
@@ -636,7 +636,7 @@ pub async fn handle_read(
     };
 
     let (json, total) = execute_wire_with_count(
-        &state.async_conn,
+        &state.async_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -757,7 +757,7 @@ pub async fn handle_insert(
 
     let sql = build_sql(&cache, &req, schemas)?;
     let json = execute_wire(
-        &state.async_conn,
+        &state.async_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -847,7 +847,7 @@ pub async fn handle_update(
 
     let sql = build_sql(&cache, &req, schemas)?;
     let json = execute_wire(
-        &state.async_conn,
+        &state.async_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -899,7 +899,7 @@ pub async fn handle_delete(
 
     let sql = build_sql(&cache, &req, schemas)?;
     let json = execute_wire(
-        &state.async_conn,
+        &state.async_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,
@@ -985,7 +985,7 @@ pub async fn handle_rpc(
 
     let sql = build_sql(&cache, &req, schemas)?;
     let json = execute_wire(
-        &state.async_conn,
+        &state.async_pool,
         &claims,
         &state.config.database.anon_role,
         &sql,

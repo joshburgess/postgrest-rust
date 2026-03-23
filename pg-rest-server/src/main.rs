@@ -123,18 +123,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_size: config.database.pool_size,
     });
 
-    let async_conn = {
-        let conn = pg_wire::WireConn::connect(&wire_addr, &user, &password, &database)
-            .await?;
-        Arc::new(pg_wire::AsyncConn::new(conn))
-    };
+    // Pool of AsyncConns — each gets its own TCP connection to a PG backend.
+    let async_pool_size = config.database.pool_size.min(8); // cap at 8 PG backends
+    let async_pool = pg_wire::AsyncPool::connect(
+        &wire_addr, &user, &password, &database, async_pool_size,
+    ).await?;
+    tracing::info!("AsyncPool created with {} connections", async_pool_size);
 
     // 8. Build application state + router.
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let state = Arc::new(AppState {
         pool,
         wire_pool,
-        async_conn,
+        async_pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),
