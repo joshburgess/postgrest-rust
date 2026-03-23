@@ -42,6 +42,7 @@ pub fn parse_message(buf: &mut BytesMut) -> Result<Option<BackendMsg>, String> {
             parse_error_or_notice(&body).map(|e| Some(BackendMsg::NoticeResponse { fields: e }))
         }
         b'I' => Ok(Some(BackendMsg::EmptyQueryResponse)),
+        b't' => parse_parameter_description(&body),
         other => {
             tracing::warn!("Unknown backend message tag: {}", other as char);
             Ok(Some(BackendMsg::ReadyForQuery { status: b'I' })) // Skip unknown
@@ -162,6 +163,21 @@ fn parse_row_description(body: &[u8]) -> Result<Option<BackendMsg>, String> {
     }
 
     Ok(Some(BackendMsg::RowDescription { fields }))
+}
+
+/// Parse ParameterDescription: [int16 num_params] [int32 oid]...
+fn parse_parameter_description(body: &[u8]) -> Result<Option<BackendMsg>, String> {
+    let num_params = i16::from_be_bytes([body[0], body[1]]) as usize;
+    let mut type_oids = Vec::with_capacity(num_params);
+    let mut offset = 2;
+    for _ in 0..num_params {
+        let oid = u32::from_be_bytes([
+            body[offset], body[offset + 1], body[offset + 2], body[offset + 3],
+        ]);
+        type_oids.push(oid);
+        offset += 4;
+    }
+    Ok(Some(BackendMsg::ParameterDescription { type_oids }))
 }
 
 fn parse_error_or_notice(body: &[u8]) -> Result<PgError, String> {

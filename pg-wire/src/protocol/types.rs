@@ -82,6 +82,8 @@ pub enum BackendMsg {
     ErrorResponse { fields: PgError },
     NoticeResponse { fields: PgError },
     EmptyQueryResponse,
+    /// ParameterDescription: param type OIDs from a Describe Statement.
+    ParameterDescription { type_oids: Vec<Oid> },
 }
 
 #[derive(Debug, Clone)]

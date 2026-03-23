@@ -1353,6 +1353,7 @@ dependencies = [
  "bytes",
  "chrono",
  "pg-typed-derive",
+ "pg-typed-macros",
  "pg-wire",
  "serde_json",
  "thiserror 2.0.18",
@@ -1368,6 +1369,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pg-typed-macros"
+version = "0.1.0"
+dependencies = [
+ "pg-wire",
+ "proc-macro2",
+ "quote",
+ "syn",
+ "tokio",
 ]
 
 [[package]]

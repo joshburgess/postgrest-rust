@@ -10,6 +10,7 @@
 //! - Multiplexed connections: many queries share one TCP connection
 //! - Statement caching: Parse once, Bind+Execute on reuse
 
+mod checked;
 mod decode;
 mod encode;
 mod error;
@@ -18,6 +19,7 @@ mod query;
 mod row;
 mod types;
 
+pub use checked::CheckedQuery;
 pub use decode::Decode;
 pub use encode::{Encode, SqlParam};
 pub use error::TypedError;
@@ -26,4 +28,6 @@ pub use query::{Client, Transaction};
 pub use row::{Row, FromRow};
 /// Derive macro for `FromRow`. Use `#[derive(pg_typed::FromRow)]` on structs.
 pub use pg_typed_derive::FromRow;
+/// Compile-time checked query macro. Requires `DATABASE_URL` env var.
+pub use pg_typed_macros::query;
 pub use types::TypeInfo;

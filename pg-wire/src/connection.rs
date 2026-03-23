@@ -186,6 +186,65 @@ impl WireConn {
         }
     }
 
+    /// Describe a SQL statement: sends Parse + Describe Statement + Sync,
+    /// returns (parameter type OIDs, column field descriptions).
+    /// Used by compile-time query checking macros.
+    pub async fn describe_statement(
+        &mut self,
+        sql: &str,
+    ) -> Result<(Vec<u32>, Vec<crate::protocol::types::FieldDescription>), PgWireError> {
+        use crate::protocol::frontend;
+        use crate::protocol::types::FrontendMsg;
+        let mut buf = bytes::BytesMut::with_capacity(256);
+
+        // Parse (unnamed statement).
+        frontend::encode_message(
+            &FrontendMsg::Parse {
+                name: b"",
+                sql: sql.as_bytes(),
+                param_oids: &[],
+            },
+            &mut buf,
+        );
+        // Describe statement.
+        frontend::encode_message(
+            &FrontendMsg::Describe {
+                kind: b'S',
+                name: b"",
+            },
+            &mut buf,
+        );
+        // Sync.
+        frontend::encode_message(&FrontendMsg::Sync, &mut buf);
+
+        self.send_raw(&buf).await?;
+
+        let mut param_oids = Vec::new();
+        let mut fields = Vec::new();
+
+        loop {
+            let msg = self.recv_msg().await?;
+            match msg {
+                BackendMsg::ParseComplete => {}
+                BackendMsg::ParameterDescription { type_oids } => {
+                    param_oids = type_oids;
+                }
+                BackendMsg::RowDescription { fields: f } => {
+                    fields = f;
+                }
+                BackendMsg::NoData => {} // query returns no rows
+                BackendMsg::ReadyForQuery { .. } => {
+                    return Ok((param_oids, fields));
+                }
+                BackendMsg::ErrorResponse { fields } => {
+                    self.drain_until_ready().await?;
+                    return Err(PgWireError::Pg(fields));
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Drain messages until ReadyForQuery (error recovery).
     pub async fn drain_until_ready(&mut self) -> Result<(), PgWireError> {
         loop {
