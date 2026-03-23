@@ -256,6 +256,7 @@ fn wants_explain(headers: &HeaderMap) -> bool {
 
 /// Inline bind parameters into the SQL string for use with simple_query.
 /// Replaces $1, $2, etc. with properly escaped literal values.
+#[allow(dead_code)]
 fn inline_params(sql: &str, params: &[String]) -> String {
     let mut result = sql.to_string();
     // Replace in reverse order so $10 doesn't match $1 first.
@@ -269,6 +270,7 @@ fn inline_params(sql: &str, params: &[String]) -> String {
 
 /// Extract the text result from simple_query response messages.
 /// Scans for the last Row message which contains our JSON result.
+#[allow(dead_code)]
 fn extract_simple_query_result(
     msgs: &[tokio_postgres::SimpleQueryMessage],
 ) -> Option<String> {
@@ -299,7 +301,7 @@ async fn execute_wire(
     let mut conn = wire_pool
         .get()
         .await
-        .map_err(|e| ApiError::BadRequest(format!("pg-wire pool error: {e}")))?;
+        .map_err(crate::error::map_wire_error)?;
 
     // Build binary params: all are text-encoded (same as before).
     let param_bytes: Vec<Vec<u8>> = sql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
@@ -314,7 +316,7 @@ async fn execute_wire(
         let rows = conn
             .pipeline_transaction(&setup, &sql.sql, &param_refs, &param_oids)
             .await
-            .map_err(|e| ApiError::BadRequest(format!("pg-wire query error: {e}")))?;
+            .map_err(crate::error::map_wire_error)?;
         let json = rows
             .first()
             .and_then(|r| r.first())
@@ -340,7 +342,7 @@ async fn execute_wire(
     let rows = conn
         .pipeline_transaction(&setup_sql, &sql.sql, &param_refs, &param_oids)
         .await
-        .map_err(|e| ApiError::BadRequest(format!("pg-wire pipeline error: {e}")))?;
+        .map_err(crate::error::map_wire_error)?;
 
     let json = rows
         .first()
@@ -365,14 +367,14 @@ async fn execute_wire_with_count(
         let mut conn = wire_pool
             .get()
             .await
-            .map_err(|e| ApiError::BadRequest(format!("pg-wire pool error: {e}")))?;
+            .map_err(crate::error::map_wire_error)?;
         let cp: Vec<Vec<u8>> = csql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
         let cpr: Vec<Option<&[u8]>> = cp.iter().map(|b| Some(b.as_slice())).collect();
         let co: Vec<u32> = vec![0; csql.params.len()];
         let rows = conn
             .query(&csql.sql, &cpr, &co)
             .await
-            .map_err(|e| ApiError::BadRequest(format!("pg-wire count error: {e}")))?;
+            .map_err(crate::error::map_wire_error)?;
         rows.first()
             .and_then(|r| r.first())
             .and_then(|c| c.as_ref())
@@ -385,6 +387,7 @@ async fn execute_wire_with_count(
 }
 
 // Legacy execute helpers (kept for fallback/schema cache which uses tokio-postgres).
+#[allow(dead_code)]
 async fn execute_with_role(
     pool: &deadpool_postgres::Pool,
     claims: &Option<JwtClaims>,
@@ -447,6 +450,7 @@ async fn execute_with_role(
 /// Execute a data query and an optional count query.
 /// Fast path for anon reads: skip transaction, 1 round trip.
 /// Authenticated or count queries: use transaction for role scoping.
+#[allow(dead_code)]
 async fn execute_with_count(
     pool: &deadpool_postgres::Pool,
     claims: &Option<JwtClaims>,

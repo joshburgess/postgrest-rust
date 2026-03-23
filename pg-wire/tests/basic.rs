@@ -59,9 +59,9 @@ async fn test_query_with_filter() {
     let mut pg = connect().await;
     let rows = pg
         .query(
-            "SELECT name FROM api.authors WHERE id = $1::int4",
-            &[Some(&1i32.to_be_bytes() as &[u8])],
-            &[23], // OID 23 = int4
+            "SELECT name FROM api.authors WHERE id = ($1::text)::int4",
+            &[Some(b"1" as &[u8])],
+            &[0], // text format, server infers type
         )
         .await
         .unwrap();

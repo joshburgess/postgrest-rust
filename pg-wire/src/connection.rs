@@ -20,6 +20,11 @@ pub struct WireConn {
 const RECV_BUF_SIZE: usize = 32 * 1024; // 32KB recv buffer
 
 impl WireConn {
+    /// Check if the connection has unconsumed data in the receive buffer.
+    pub fn has_pending_data(&self) -> bool {
+        !self.recv_buf.is_empty()
+    }
+
     /// Connect to PostgreSQL and perform authentication.
     pub async fn connect(
         addr: &str,
@@ -185,9 +190,12 @@ impl WireConn {
     pub async fn drain_until_ready(&mut self) -> Result<(), PgWireError> {
         loop {
             let msg = self.recv_msg().await?;
-            tracing::trace!("drain: {:?}", std::mem::discriminant(&msg));
             if matches!(msg, BackendMsg::ReadyForQuery { .. }) {
                 return Ok(());
+            }
+            // ErrorResponse inside a simple query — absorb it, keep draining.
+            if let BackendMsg::ErrorResponse { ref fields } = msg {
+                tracing::warn!("Error in drain: {}: {}", fields.code, fields.message);
             }
         }
     }

@@ -143,3 +143,22 @@ impl From<pg_schema_cache::SchemaCacheError> for ApiError {
         Self::BadRequest(format!("schema cache error: {e}"))
     }
 }
+
+/// Convert pg-wire errors to ApiError with proper HTTP status mapping.
+pub fn map_wire_error(e: pg_wire::PgWireError) -> ApiError {
+    match e {
+        pg_wire::PgWireError::Pg(ref pg_err) => {
+            let code = &pg_err.code;
+            let msg = format!("{}: {}", pg_err.code, pg_err.message);
+            match code.as_str() {
+                "42501" => ApiError::Unauthorized(format!("database error: {msg}")),
+                c if c.starts_with("P0") => ApiError::BadRequest(format!("database error: {msg}")),
+                c if c.starts_with("23") => ApiError::BadRequest(format!("database error: {msg}")),
+                c if c.starts_with("22") => ApiError::BadRequest(format!("database error: {msg}")),
+                "42P01" | "42883" => ApiError::BadRequest(format!("database error: {msg}")),
+                _ => ApiError::BadRequest(format!("database error: {msg}")),
+            }
+        }
+        other => ApiError::BadRequest(format!("pg-wire error: {other}")),
+    }
+}

@@ -49,13 +49,21 @@ impl Pool {
             .await
             .map_err(|_| PgWireError::Protocol("Pool closed".into()))?;
 
-        // Try to reuse an existing connection.
+        // Try to reuse an existing connection, discarding any with stale state.
         let conn = {
             let mut conns = self.connections.lock().await;
-            conns.pop()
+            loop {
+                match conns.pop() {
+                    Some(c) if c.conn_ref().has_pending_data() => {
+                        tracing::debug!("Discarding connection with pending data");
+                        continue; // Discard and try next
+                    }
+                    other => break other,
+                }
+            }
         };
 
-        let pipeline = match conn {
+        let mut pipeline = match conn {
             Some(c) => c,
             None => {
                 // Create a new connection.
@@ -69,6 +77,13 @@ impl Pool {
                 PgPipeline::new(wire)
             }
         };
+
+        // Clean up any leftover state from the previous use.
+        // ROLLBACK handles aborted transactions, RESET ROLE restores default role.
+        pipeline
+            .simple_query("ROLLBACK; RESET ROLE")
+            .await
+            .ok(); // Ignore errors — might not be in a transaction.
 
         Ok(PooledConn {
             conn: Some(pipeline),
@@ -89,8 +104,11 @@ impl Drop for PooledConn {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
             let pool = Arc::clone(&self.pool);
-            // Return connection to pool asynchronously.
+            // Return connection to pool. Cleanup happens on next get().
             tokio::spawn(async move {
+                if conn.conn_ref().has_pending_data() {
+                    return; // Discard corrupted connection.
+                }
                 let mut conns = pool.connections.lock().await;
                 conns.push(conn);
             });

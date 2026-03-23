@@ -267,8 +267,18 @@ impl PgPipeline {
         (name, true)
     }
 
-    /// Get a reference to the underlying connection.
+    /// Clear the statement cache (e.g., after DISCARD ALL).
+    pub fn clear_cache(&mut self) {
+        self.stmt_cache.clear();
+    }
+
+    /// Get a mutable reference to the underlying connection.
     pub fn conn(&mut self) -> &mut WireConn {
         &mut self.conn
+    }
+
+    /// Get a reference to the underlying connection.
+    pub fn conn_ref(&self) -> &WireConn {
+        &self.conn
     }
 }
