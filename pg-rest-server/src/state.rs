@@ -18,6 +18,9 @@ pub struct AppState {
     pub config: AppConfig,
     pub jwt_decoding_key: jsonwebtoken::DecodingKey,
     pub jwt_validation: jsonwebtoken::Validation,
+    pub jwt_cache: crate::auth::JwtCache,
+    /// Pre-computed anon setup SQL: "BEGIN; SET LOCAL ROLE \"web_anon\""
+    pub anon_setup_sql: String,
 }
 
 impl AppState {

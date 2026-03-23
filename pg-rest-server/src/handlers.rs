@@ -295,7 +295,7 @@ fn extract_simple_query_result(
 async fn execute_wire(
     async_pool: &std::sync::Arc<pg_wire::AsyncPool>,
     claims: &Option<JwtClaims>,
-    anon_role: &str,
+    anon_setup_sql: &str,
     sql: &SqlOutput,
 ) -> Result<Option<String>, ApiError> {
     let param_bytes: Vec<Vec<u8>> = sql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
@@ -303,11 +303,9 @@ async fn execute_wire(
     let param_oids: Vec<u32> = vec![0; sql.params.len()];
 
     if claims.is_none() {
-        // Anon: pipeline SET ROLE + parameterized query.
-        let quoted_role = format!("\"{}\"", anon_role.replace('"', "\"\""));
-        let setup = format!("BEGIN; SET LOCAL ROLE {quoted_role}");
+        // Anon: use pre-computed setup SQL (no allocation).
         let rows = async_pool
-            .exec_transaction(&setup, &sql.sql, &param_refs, &param_oids)
+            .exec_transaction(anon_setup_sql, &sql.sql, &param_refs, &param_oids)
             .await
             .map_err(crate::error::map_wire_error)?;
         let json = rows
@@ -319,7 +317,7 @@ async fn execute_wire(
     }
 
     // Authenticated: pipeline transaction.
-    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or(anon_role);
+    let role = claims.as_ref().unwrap().role.as_str();
     let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
 
     let setup_sql = if let Some(claims) = claims {
@@ -349,11 +347,11 @@ async fn execute_wire(
 async fn execute_wire_with_count(
     async_pool: &std::sync::Arc<pg_wire::AsyncPool>,
     claims: &Option<JwtClaims>,
-    anon_role: &str,
+    anon_setup_sql: &str,
     sql: &SqlOutput,
     count_sql: Option<&SqlOutput>,
 ) -> Result<(Option<String>, Option<i64>), ApiError> {
-    let json = execute_wire(async_pool, claims, anon_role, sql).await?;
+    let json = execute_wire(async_pool, claims, anon_setup_sql, sql).await?;
 
     let total = if let Some(csql) = count_sql {
         let cp: Vec<Vec<u8>> = csql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
@@ -759,7 +757,7 @@ pub async fn handle_insert(
     let json = execute_wire(
         &state.async_pool,
         &claims,
-        &state.config.database.anon_role,
+        &state.anon_setup_sql,
         &sql,
     )
     .await?;
@@ -849,7 +847,7 @@ pub async fn handle_update(
     let json = execute_wire(
         &state.async_pool,
         &claims,
-        &state.config.database.anon_role,
+        &state.anon_setup_sql,
         &sql,
     )
     .await?;
@@ -901,7 +899,7 @@ pub async fn handle_delete(
     let json = execute_wire(
         &state.async_pool,
         &claims,
-        &state.config.database.anon_role,
+        &state.anon_setup_sql,
         &sql,
     )
     .await?;
@@ -987,7 +985,7 @@ pub async fn handle_rpc(
     let json = execute_wire(
         &state.async_pool,
         &claims,
-        &state.config.database.anon_role,
+        &state.anon_setup_sql,
         &sql,
     )
     .await?;

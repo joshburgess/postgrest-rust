@@ -83,6 +83,8 @@ async fn setup() -> axum::Router {
         config,
         jwt_decoding_key,
         jwt_validation,
+        jwt_cache: pg_rest_server::auth::JwtCache::new(),
+        anon_setup_sql: "BEGIN; SET LOCAL ROLE \"web_anon\"".to_string(),
     });
 
     // Build OpenAPI cache.
