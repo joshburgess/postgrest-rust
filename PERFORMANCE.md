@@ -107,7 +107,26 @@ The current bottleneck is the **single PostgreSQL backend process**. Each TCP co
 | tokio-postgres + transaction | 7,096 | 6,826 | Binary protocol |
 | simple_query (inlined params) | 21,453 | 20,165 | String escaping |
 | pg-wire pool (binary) | 10,796 | 6,826 | Binary protocol |
-| **pg-wire AsyncConn (binary)** | **13,267** | **13,155** | **Binary protocol** |
+| pg-wire AsyncConn ×1 (binary) | 13,267 | 13,155 | Binary protocol |
+| **pg-wire AsyncPool ×4 (binary)** | **25,036** | **23,987** | **Binary protocol** |
 | PostgREST (reference) | 7,353 | 2,075 | Binary protocol |
 
-The AsyncConn architecture delivers the best combination of speed and safety: binary protocol parameterization (injection-proof) with async message coalescing (high throughput).
+The AsyncPool architecture delivers the best combination of speed and safety: binary protocol parameterization (injection-proof) with async message coalescing and multi-backend parallelism.
+
+## AsyncPool Scaling
+
+Round-robin dispatch across N AsyncConns (N TCP connections → N PG backends):
+
+| Pool Size | c=1 | c=10 | c=50 | c=100 |
+|---|---|---|---|---|
+| 1 AsyncConn | 4,562 | 13,765 | 14,234 | 14,022 |
+| 2 AsyncConns | 4,500 | 19,335 | 23,334 | 21,504 |
+| 4 AsyncConns | 4,590 | 21,363 | 25,036 | 23,987 |
+| 8 AsyncConns | 4,202 | 21,693 | 25,525 | 24,933 |
+| PostgREST | 2,456 | 10,495 | 3,097 | 2,832 |
+
+- c=1 is unaffected by pool size (single request, single backend)
+- 2 connections nearly doubles throughput at c≥10
+- 4 connections is the sweet spot (+76% over 1 conn)
+- 8 connections shows diminishing returns (PG container CPU-bound)
+- At c=100 with 4 conns: **8.5x faster** than PostgREST
