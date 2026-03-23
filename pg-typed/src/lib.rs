@@ -24,4 +24,6 @@ pub use error::TypedError;
 pub use oid::TypeOid;
 pub use query::{Client, Transaction};
 pub use row::{Row, FromRow};
+/// Derive macro for `FromRow`. Use `#[derive(pg_typed::FromRow)]` on structs.
+pub use pg_typed_derive::FromRow;
 pub use types::TypeInfo;

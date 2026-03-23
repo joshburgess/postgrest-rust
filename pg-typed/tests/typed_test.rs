@@ -521,6 +521,84 @@ async fn test_from_row_multiple() {
 }
 
 // ---------------------------------------------------------------------------
+// FromRow derive macro
+// ---------------------------------------------------------------------------
+
+#[derive(pg_typed::FromRow)]
+struct DerivedAuthor {
+    id: i32,
+    name: String,
+}
+
+#[tokio::test]
+async fn test_derive_from_row_basic() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT id, name FROM api.authors WHERE id = $1", &[&1i32])
+        .await
+        .unwrap();
+    let author = DerivedAuthor::from_row(&rows[0]).unwrap();
+    assert_eq!(author.id, 1);
+    assert_eq!(author.name, "Alice");
+}
+
+#[derive(pg_typed::FromRow)]
+struct DerivedAuthorWithBio {
+    id: i32,
+    name: String,
+    bio: Option<String>,
+}
+
+#[tokio::test]
+async fn test_derive_from_row_optional() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT id, name, bio FROM api.authors WHERE id = $1", &[&1i32])
+        .await
+        .unwrap();
+    let author = DerivedAuthorWithBio::from_row(&rows[0]).unwrap();
+    assert_eq!(author.id, 1);
+    assert_eq!(author.name, "Alice");
+    assert!(author.bio.is_some());
+}
+
+#[derive(pg_typed::FromRow)]
+struct RenamedFields {
+    #[from_row(rename = "id")]
+    author_id: i32,
+    #[from_row(rename = "name")]
+    author_name: String,
+}
+
+#[tokio::test]
+async fn test_derive_from_row_rename() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT id, name FROM api.authors WHERE id = $1", &[&1i32])
+        .await
+        .unwrap();
+    let r = RenamedFields::from_row(&rows[0]).unwrap();
+    assert_eq!(r.author_id, 1);
+    assert_eq!(r.author_name, "Alice");
+}
+
+#[tokio::test]
+async fn test_derive_from_row_multiple() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT id, name FROM api.authors ORDER BY id", &[])
+        .await
+        .unwrap();
+    let authors: Vec<DerivedAuthor> = rows
+        .iter()
+        .map(|r| DerivedAuthor::from_row(r).unwrap())
+        .collect();
+    assert!(authors.len() >= 3);
+    assert_eq!(authors[0].name, "Alice");
+    assert_eq!(authors[1].name, "Bob");
+}
+
+// ---------------------------------------------------------------------------
 // Nullable parameters
 // ---------------------------------------------------------------------------
 

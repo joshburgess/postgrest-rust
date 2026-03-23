@@ -1352,12 +1352,22 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "chrono",
+ "pg-typed-derive",
  "pg-wire",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "pg-typed-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
