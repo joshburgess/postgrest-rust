@@ -39,14 +39,11 @@ async fn setup() -> axum::Router {
         },
     };
 
-    let pg_config: tokio_postgres::Config = config.database.uri.parse().unwrap();
-    let mgr = deadpool_postgres::Manager::new(pg_config, tokio_postgres::NoTls);
-    let pool = deadpool_postgres::Pool::builder(mgr)
-        .max_size(config.database.pool_size)
-        .build()
+    // One-off tokio-postgres connection for schema cache build.
+    let (client, conn) = tokio_postgres::connect(&config.database.uri, tokio_postgres::NoTls)
+        .await
         .unwrap();
-
-    let client = pool.get().await.unwrap();
+    tokio::spawn(async move { conn.await.ok(); });
     let cache =
         pg_schema_cache::build_schema_cache(&client, &config.database.schemas)
             .await
@@ -61,21 +58,25 @@ async fn setup() -> axum::Router {
         jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
     jwt_validation.required_spec_claims = Default::default();
 
-    let wire_pool = pg_wire::Pool::new(pg_wire::PoolConfig {
-        addr: "127.0.0.1:54322".to_string(),
-        user: "authenticator".to_string(),
-        password: "authenticator".to_string(),
-        database: "postgrest_test".to_string(),
-        max_size: 5,
-    });
+    let conn_pool = pg_wire::ConnPool::new(
+        pg_wire::ConnPoolConfig {
+            addr: "127.0.0.1:54322".to_string(),
+            user: "authenticator".to_string(),
+            password: "authenticator".to_string(),
+            database: "postgrest_test".to_string(),
+            min_idle: 1,
+            max_size: 5,
+            ..Default::default()
+        },
+        pg_wire::LifecycleHooks::default(),
+    ).await.unwrap();
 
     let async_pool = pg_wire::AsyncPool::connect(
         "127.0.0.1:54322", "authenticator", "authenticator", "postgrest_test", 4,
     ).await.unwrap();
 
     let state = Arc::new(AppState {
-        pool,
-        wire_pool,
+        conn_pool,
         async_pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,

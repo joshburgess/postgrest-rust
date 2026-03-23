@@ -36,60 +36,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .init();
     }
 
-    // 3. Create database pool.
-    let pg_config: tokio_postgres::Config = config.database.uri.parse()?;
-    let recycling = if config.database.prepared_statements {
-        deadpool_postgres::RecyclingMethod::Fast
-    } else {
-        deadpool_postgres::RecyclingMethod::Clean
-    };
-    let mgr_config = deadpool_postgres::ManagerConfig { recycling_method: recycling };
+    // 3. Parse PG URI for pg-wire pools.
+    let (user, password, host, port, database) = parse_pg_uri(&config.database.uri);
+    let wire_addr = format!("{host}:{port}");
 
-    #[cfg(feature = "tls")]
-    let pool = {
-        let tls_config = rustls::ClientConfig::builder()
-            .with_root_certificates(rustls::RootCertStore::from_iter(
-                webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-            ))
-            .with_no_client_auth();
-        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
-        let mgr = deadpool_postgres::Manager::from_config(pg_config, tls, mgr_config);
-        deadpool_postgres::Pool::builder(mgr)
-            .max_size(config.database.pool_size)
-            .build()?
-    };
-
-    #[cfg(not(feature = "tls"))]
-    let pool = {
-        let mgr = deadpool_postgres::Manager::from_config(
-            pg_config,
-            tokio_postgres::NoTls,
-            mgr_config,
-        );
-        deadpool_postgres::Pool::builder(mgr)
-            .max_size(config.database.pool_size)
-            .build()?
-    };
-
-    // 4. Warm up connection pool.
-    {
-        let mut warmup = Vec::new();
-        let target = pool.status().max_size.min(config.database.pool_size);
-        for _ in 0..target {
-            match pool.get().await {
-                Ok(c) => warmup.push(c),
-                Err(e) => {
-                    tracing::warn!("Pool warmup partial: {e}");
-                    break;
-                }
-            }
-        }
-        tracing::info!("Pool warmed up: {} connections", warmup.len());
-    } // connections return to pool when dropped
-
-    // 5. Build initial schema cache.
+    // 4. Build initial schema cache using a one-off tokio-postgres connection.
     tracing::info!("Loading schema cache…");
-    let client = pool.get().await?;
+    let (client, conn) = tokio_postgres::connect(&config.database.uri, tokio_postgres::NoTls).await?;
+    tokio::spawn(async move { conn.await.ok(); });
     let cache =
         pg_schema_cache::build_schema_cache(&client, &config.database.schemas).await?;
     drop(client);
@@ -111,19 +65,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         v
     };
 
-    // 7. Create pg-wire pool and async connection for the hot path.
-    let (user, password, host, port, database) = parse_pg_uri(&config.database.uri);
-    let wire_addr = format!("{host}:{port}");
+    // 7. Create pg-wire pools.
+    // ConnPool: checkout/checkin pool for cold-path operations (EXPLAIN, health check).
+    let conn_pool = pg_wire::ConnPool::new(
+        pg_wire::ConnPoolConfig {
+            addr: wire_addr.clone(),
+            user: user.clone(),
+            password: password.clone(),
+            database: database.clone(),
+            min_idle: 1,
+            max_size: config.database.pool_size.max(2),
+            ..Default::default()
+        },
+        pg_wire::LifecycleHooks::default(),
+    )
+    .await?;
+    tracing::info!("ConnPool created (max_size={})", config.database.pool_size.max(2));
 
-    let wire_pool = pg_wire::Pool::new(pg_wire::PoolConfig {
-        addr: wire_addr.clone(),
-        user: user.clone(),
-        password: password.clone(),
-        database: database.clone(),
-        max_size: config.database.pool_size,
-    });
-
-    // Pool of AsyncConns — each gets its own TCP connection to a PG backend.
+    // AsyncPool: multiplexed connections for the hot path (pipelined binary protocol).
     let async_pool_size = config.database.pool_size.min(8); // cap at 8 PG backends
     let async_pool = pg_wire::AsyncPool::connect(
         &wire_addr, &user, &password, &database, async_pool_size,
@@ -133,8 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. Build application state + router.
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let state = Arc::new(AppState {
-        pool,
-        wire_pool,
+        conn_pool,
         async_pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,

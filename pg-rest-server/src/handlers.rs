@@ -254,36 +254,6 @@ fn wants_explain(headers: &HeaderMap) -> bool {
 // Pipeline protocol: send everything in 1 round trip
 // ---------------------------------------------------------------------------
 
-/// Inline bind parameters into the SQL string for use with simple_query.
-/// Replaces $1, $2, etc. with properly escaped literal values.
-#[allow(dead_code)]
-fn inline_params(sql: &str, params: &[String]) -> String {
-    let mut result = sql.to_string();
-    // Replace in reverse order so $10 doesn't match $1 first.
-    for (i, param) in params.iter().enumerate().rev() {
-        let placeholder = format!("${}", i + 1);
-        let escaped = format!("'{}'", param.replace('\'', "''"));
-        result = result.replace(&placeholder, &escaped);
-    }
-    result
-}
-
-/// Extract the text result from simple_query response messages.
-/// Scans for the last Row message which contains our JSON result.
-#[allow(dead_code)]
-fn extract_simple_query_result(
-    msgs: &[tokio_postgres::SimpleQueryMessage],
-) -> Option<String> {
-    // The data query result is the last Row in the response.
-    // Walk backwards to find it (skipping CommandComplete messages from COMMIT etc.).
-    for msg in msgs.iter().rev() {
-        if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
-            return row.get(0).map(|s| s.to_string());
-        }
-    }
-    None
-}
-
 // ---------------------------------------------------------------------------
 // Execute helper
 // ---------------------------------------------------------------------------
@@ -372,181 +342,6 @@ async fn execute_wire_with_count(
     Ok((json, total))
 }
 
-// Legacy execute helpers (kept for fallback/schema cache which uses tokio-postgres).
-#[allow(dead_code)]
-async fn execute_with_role(
-    pool: &deadpool_postgres::Pool,
-    claims: &Option<JwtClaims>,
-    anon_role: &str,
-    sql: &SqlOutput,
-) -> Result<Option<String>, ApiError> {
-    // Fast path: anon requests — 1 round trip, no role switch.
-    if claims.is_none() {
-        let client = pool.get().await?;
-        let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
-            .params
-            .iter()
-            .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-            .collect();
-        let rows = client.query(&sql.sql, &param_refs).await?;
-        let json: Option<String> = rows
-            .first()
-            .and_then(|r| r.try_get::<_, String>(0).ok());
-        return Ok(json);
-    }
-
-    // Authenticated path: pipeline everything into 1 simple_query call.
-    // BEGIN + SET LOCAL ROLE + set_config + data query + COMMIT = 1 round trip.
-    let client = pool.get().await?;
-    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or(anon_role);
-    let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
-    let inlined_query = inline_params(&sql.sql, &sql.params);
-
-    let pipeline_sql = if let Some(claims) = claims {
-        let escaped_claims = claims.raw.replace('\'', "''");
-        format!(
-            "BEGIN; \
-             SET LOCAL ROLE {quoted_role}; \
-             SELECT set_config('request.jwt.claims', '{escaped_claims}', true); \
-             {inlined_query}; \
-             COMMIT"
-        )
-    } else {
-        format!(
-            "BEGIN; \
-             SET LOCAL ROLE {quoted_role}; \
-             {inlined_query}; \
-             COMMIT"
-        )
-    };
-
-    match client.simple_query(&pipeline_sql).await {
-        Ok(msgs) => {
-            let json = extract_simple_query_result(&msgs);
-            Ok(json)
-        }
-        Err(e) => {
-            // Clean up the aborted transaction so the connection is reusable.
-            let _ = client.simple_query("ROLLBACK").await;
-            Err(ApiError::Database(e))
-        }
-    }
-}
-
-/// Execute a data query and an optional count query.
-/// Fast path for anon reads: skip transaction, 1 round trip.
-/// Authenticated or count queries: use transaction for role scoping.
-#[allow(dead_code)]
-async fn execute_with_count(
-    pool: &deadpool_postgres::Pool,
-    claims: &Option<JwtClaims>,
-    anon_role: &str,
-    sql: &SqlOutput,
-    count_sql: Option<&SqlOutput>,
-) -> Result<(Option<String>, Option<i64>), ApiError> {
-    // Fast path: anon reads without count — 1 round trip via simple_query.
-    if claims.is_none() && count_sql.is_none() {
-        let client = pool.get().await?;
-        let inlined = inline_params(&sql.sql, &sql.params);
-        let msgs = client.simple_query(&inlined).await?;
-        let json = extract_simple_query_result(&msgs);
-        return Ok((json, None));
-    }
-
-    // Anon with count — pipeline data + count in one simple_query.
-    if claims.is_none() {
-        let client = pool.get().await?;
-        let inlined = inline_params(&sql.sql, &sql.params);
-        let pipeline = if let Some(csql) = count_sql {
-            let inlined_count = inline_params(&csql.sql, &csql.params);
-            format!("{inlined}; {inlined_count}")
-        } else {
-            inlined
-        };
-        let msgs = client.simple_query(&pipeline).await.map_err(|e| {
-            // No transaction to rollback for anon path.
-            ApiError::Database(e)
-        })?;
-
-        // Extract data (first Row) and count (second Row if present).
-        let mut rows_iter = msgs.iter().filter_map(|m| {
-            if let tokio_postgres::SimpleQueryMessage::Row(r) = m {
-                Some(r)
-            } else {
-                None
-            }
-        });
-        let json = rows_iter.next().and_then(|r| r.get(0).map(|s| s.to_string()));
-        let total = if count_sql.is_some() {
-            rows_iter.next().and_then(|r| r.get(0).and_then(|s| s.parse::<i64>().ok()))
-        } else {
-            None
-        };
-        return Ok((json, total));
-    }
-
-    // Authenticated path: pipeline BEGIN + SET ROLE + set_config + query [+ count] + COMMIT.
-    // All in 1 simple_query call = 1 TCP round trip.
-    let client = pool.get().await?;
-    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or(anon_role);
-    let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
-    let inlined_query = inline_params(&sql.sql, &sql.params);
-
-    let mut pipeline = if let Some(claims) = claims {
-        let escaped_claims = claims.raw.replace('\'', "''");
-        format!(
-            "BEGIN; \
-             SET LOCAL ROLE {quoted_role}; \
-             SELECT set_config('request.jwt.claims', '{escaped_claims}', true); \
-             {inlined_query}"
-        )
-    } else {
-        format!(
-            "BEGIN; \
-             SET LOCAL ROLE {quoted_role}; \
-             {inlined_query}"
-        )
-    };
-
-    if let Some(csql) = count_sql {
-        let inlined_count = inline_params(&csql.sql, &csql.params);
-        pipeline.push_str("; ");
-        pipeline.push_str(&inlined_count);
-    }
-    pipeline.push_str("; COMMIT");
-
-    let msgs = match client.simple_query(&pipeline).await {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = client.simple_query("ROLLBACK").await;
-            return Err(ApiError::Database(e));
-        }
-    };
-
-    // Extract results: data query row, then optional count row.
-    let mut rows_iter = msgs.iter().filter_map(|m| {
-        if let tokio_postgres::SimpleQueryMessage::Row(r) = m {
-            Some(r)
-        } else {
-            None
-        }
-    });
-
-    // Skip the set_config result row (if JWT claims were set).
-    if claims.is_some() {
-        rows_iter.next(); // set_config returns a row
-    }
-
-    let json = rows_iter.next().and_then(|r| r.get(0).map(|s| s.to_string()));
-    let total = if count_sql.is_some() {
-        rows_iter.next().and_then(|r| r.get(0).and_then(|s| s.parse::<i64>().ok()))
-    } else {
-        None
-    };
-
-    Ok((json, total))
-}
-
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -604,21 +399,30 @@ pub async fn handle_read(
     // EXPLAIN support: prepend EXPLAIN to return the query plan.
     if wants_explain(&headers) {
         sql.sql = format!("EXPLAIN (FORMAT JSON) {}", sql.sql);
-        // EXPLAIN returns json type — execute directly and collect.
-        let mut client = state.pool.get().await?;
-        let txn = client.transaction().await?;
         let role = claims.as_ref().map(|c| c.role.as_str())
             .unwrap_or(&state.config.database.anon_role);
         let quoted_role = format!("\"{}\"", role.replace('"', "\"\""));
-        txn.batch_execute(&format!("SET LOCAL ROLE {quoted_role}")).await?;
-        let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = sql
-            .params.iter().map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-        let rows = txn.query(&sql.sql, &param_refs).await?;
-        txn.commit().await?;
-        // EXPLAIN FORMAT JSON returns a single row with a json column.
-        let plan: serde_json::Value = rows.first()
-            .and_then(|r| r.try_get::<_, serde_json::Value>(0).ok())
+
+        // Execute EXPLAIN via pg-wire AsyncPool transaction.
+        let setup_sql = format!("BEGIN; SET LOCAL ROLE {quoted_role}");
+        let param_refs: Vec<Option<&[u8]>> = sql.params.iter().map(|s| Some(s.as_bytes())).collect();
+        let param_oids: Vec<u32> = vec![0; sql.params.len()];
+        let rows = state.async_pool
+            .exec_transaction(&setup_sql, &sql.sql, &param_refs, &param_oids)
+            .await
+            .map_err(crate::error::map_wire_error)?;
+
+        // EXPLAIN FORMAT JSON returns a single text row.
+        let plan_text = rows.first()
+            .and_then(|r| r.first())
+            .and_then(|c| c.as_ref())
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_else(|| "[]".to_string());
+
+        // Parse the text as JSON (PostgreSQL returns valid JSON text).
+        let plan: serde_json::Value = serde_json::from_str(&plan_text)
             .unwrap_or(serde_json::json!([]));
+
         return Ok((
             StatusCode::OK,
             [(header::CONTENT_TYPE.as_str(), "application/vnd.pgrst.plan+json")],
@@ -1047,7 +851,11 @@ pub async fn handle_root(
 pub async fn handle_reload(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, ApiError> {
-    let client = state.pool.get().await?;
+    // Use a one-off tokio-postgres connection for schema introspection.
+    let (client, conn) = tokio_postgres::connect(&state.config.database.uri, tokio_postgres::NoTls)
+        .await
+        .map_err(ApiError::Database)?;
+    tokio::spawn(async move { conn.await.ok(); });
     let cache =
         pg_schema_cache::build_schema_cache(&client, &state.config.database.schemas).await?;
     drop(client);
@@ -1084,7 +892,7 @@ pub async fn handle_live() -> StatusCode {
 }
 
 pub async fn handle_ready(State(state): State<Arc<AppState>>) -> StatusCode {
-    match state.pool.get().await {
+    match state.conn_pool.get().await {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
@@ -1092,7 +900,7 @@ pub async fn handle_ready(State(state): State<Arc<AppState>>) -> StatusCode {
 
 /// Prometheus-compatible metrics endpoint.
 pub async fn handle_metrics(State(state): State<Arc<AppState>>) -> Response {
-    let pool_status = state.pool.status();
+    let pool_metrics = state.conn_pool.metrics();
     let cache = state.schema_cache.borrow();
 
     let body = format!(
@@ -1102,18 +910,30 @@ pub async fn handle_metrics(State(state): State<Arc<AppState>>) -> Response {
          # HELP pg_rest_pool_available Available connections in pool\n\
          # TYPE pg_rest_pool_available gauge\n\
          pg_rest_pool_available {}\n\
-         # HELP pg_rest_pool_max_size Maximum pool size\n\
-         # TYPE pg_rest_pool_max_size gauge\n\
-         pg_rest_pool_max_size {}\n\
+         # HELP pg_rest_pool_in_use Connections currently checked out\n\
+         # TYPE pg_rest_pool_in_use gauge\n\
+         pg_rest_pool_in_use {}\n\
+         # HELP pg_rest_pool_checkouts Total checkouts since startup\n\
+         # TYPE pg_rest_pool_checkouts counter\n\
+         pg_rest_pool_checkouts {}\n\
+         # HELP pg_rest_pool_timeouts Total checkout timeouts since startup\n\
+         # TYPE pg_rest_pool_timeouts counter\n\
+         pg_rest_pool_timeouts {}\n\
+         # HELP pg_rest_async_pool_size AsyncPool connection count\n\
+         # TYPE pg_rest_async_pool_size gauge\n\
+         pg_rest_async_pool_size {}\n\
          # HELP pg_rest_schema_tables Number of tables in schema cache\n\
          # TYPE pg_rest_schema_tables gauge\n\
          pg_rest_schema_tables {}\n\
          # HELP pg_rest_schema_functions Number of functions in schema cache\n\
          # TYPE pg_rest_schema_functions gauge\n\
          pg_rest_schema_functions {}\n",
-        pool_status.size,
-        pool_status.available,
-        pool_status.max_size,
+        pool_metrics.total,
+        pool_metrics.idle,
+        pool_metrics.in_use,
+        pool_metrics.total_checkouts,
+        pool_metrics.total_timeouts,
+        state.async_pool.size(),
         cache.tables.len(),
         cache.functions.len(),
     );

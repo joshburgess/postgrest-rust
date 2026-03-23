@@ -6,10 +6,9 @@ use crate::config::AppConfig;
 use pg_schema_cache::SchemaCache;
 
 pub struct AppState {
-    pub pool: deadpool_postgres::Pool,
-    /// pg-wire connection pool for the hot path (pipelined binary protocol).
-    pub wire_pool: Arc<pg_wire::Pool>,
-    /// Pool of async connections for parallel PG backend utilization.
+    /// Connection pool for cold-path operations (EXPLAIN, health check).
+    pub conn_pool: Arc<pg_wire::ConnPool>,
+    /// Pool of async connections for parallel PG backend utilization (hot path).
     pub async_pool: Arc<pg_wire::AsyncPool>,
     pub schema_cache: watch::Receiver<Arc<SchemaCache>>,
     pub schema_cache_tx: watch::Sender<Arc<SchemaCache>>,

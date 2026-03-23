@@ -12,7 +12,7 @@ pub enum ApiError {
     Parse(pg_query_engine::ParseError),
     Database(tokio_postgres::Error),
     NotAcceptable(String),
-    Pool(deadpool_postgres::PoolError),
+    Pool(String),
 }
 
 impl std::fmt::Display for ApiError {
@@ -33,7 +33,7 @@ impl std::fmt::Display for ApiError {
                     write!(f, "database error: {e}")
                 }
             }
-            Self::Pool(e) => write!(f, "connection pool error: {e}"),
+            Self::Pool(msg) => write!(f, "connection pool error: {msg}"),
         }
     }
 }
@@ -132,9 +132,9 @@ impl From<tokio_postgres::Error> for ApiError {
     }
 }
 
-impl From<deadpool_postgres::PoolError> for ApiError {
-    fn from(e: deadpool_postgres::PoolError) -> Self {
-        Self::Pool(e)
+impl From<pg_wire::PgWireError> for ApiError {
+    fn from(e: pg_wire::PgWireError) -> Self {
+        Self::Pool(e.to_string())
     }
 }
 
