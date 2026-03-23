@@ -44,7 +44,14 @@ pub enum ResponseCollector {
 
 /// Response from a pipeline request.
 pub enum PipelineResponse {
-    Rows(Vec<Vec<Option<Vec<u8>>>>),
+    Rows {
+        /// Column metadata from RowDescription (empty if no RowDescription received).
+        fields: Vec<crate::protocol::types::FieldDescription>,
+        /// Row data.
+        rows: Vec<Vec<Option<Vec<u8>>>>,
+        /// CommandComplete tag (e.g. "SELECT 3", "INSERT 0 1").
+        command_tag: String,
+    },
     Done,
 }
 
@@ -289,7 +296,7 @@ impl AsyncConn {
             .map_err(|_| PgWireError::ConnectionClosed)??;
 
         match data_resp {
-            PipelineResponse::Rows(rows) => Ok(rows),
+            PipelineResponse::Rows { rows, .. } => Ok(rows),
             PipelineResponse::Done => Ok(Vec::new()),
         }
     }
@@ -342,7 +349,7 @@ impl AsyncConn {
 
         let resp = self.submit(buf, ResponseCollector::Rows).await?;
         match resp {
-            PipelineResponse::Rows(rows) => Ok(rows),
+            PipelineResponse::Rows { rows, .. } => Ok(rows),
             PipelineResponse::Done => Ok(Vec::new()),
         }
     }
@@ -477,22 +484,24 @@ async fn collect_rows(
     buf: &mut BytesMut,
 ) -> Result<PipelineResponse, PgWireError> {
     let mut rows = Vec::new();
+    let mut fields = Vec::new();
+    let mut command_tag = String::new();
     loop {
         let msg = read_msg(stream, buf).await?;
         match msg {
             BackendMsg::DataRow { columns } => rows.push(columns),
-            BackendMsg::ReadyForQuery { .. } => return Ok(PipelineResponse::Rows(rows)),
+            BackendMsg::RowDescription { fields: f } => fields = f,
+            BackendMsg::CommandComplete { tag } => command_tag = tag,
+            BackendMsg::ReadyForQuery { .. } => {
+                return Ok(PipelineResponse::Rows { fields, rows, command_tag });
+            }
             BackendMsg::ErrorResponse { fields } => {
-                // Drain until ReadyForQuery to recover.
                 drain_until_ready(stream, buf).await?;
                 return Err(PgWireError::Pg(fields));
             }
-            // Skip protocol overhead messages.
             BackendMsg::ParseComplete
             | BackendMsg::BindComplete
             | BackendMsg::NoData
-            | BackendMsg::RowDescription { .. }
-            | BackendMsg::CommandComplete { .. }
             | BackendMsg::NoticeResponse { .. }
             | BackendMsg::EmptyQueryResponse => {}
             _ => {}

@@ -98,6 +98,14 @@ pub fn encode_message(msg: &FrontendMsg<'_>, buf: &mut BytesMut) {
             buf.put_slice(sql);
             buf.put_u8(0);
         }
+        FrontendMsg::Describe { kind, name } => {
+            let len = 4 + 1 + name.len() + 1;
+            buf.put_u8(b'D');
+            buf.put_i32(len as i32);
+            buf.put_u8(*kind);
+            buf.put_slice(name);
+            buf.put_u8(0);
+        }
         FrontendMsg::Close { kind, name } => {
             let len = 4 + 1 + name.len() + 1;
             buf.put_u8(b'C');

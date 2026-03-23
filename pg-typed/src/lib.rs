@@ -22,6 +22,6 @@ pub use decode::Decode;
 pub use encode::Encode;
 pub use error::TypedError;
 pub use oid::TypeOid;
-pub use query::Client;
+pub use query::{Client, Transaction};
 pub use row::{Row, FromRow};
 pub use types::TypeInfo;

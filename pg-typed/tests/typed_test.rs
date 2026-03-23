@@ -1,7 +1,7 @@
 //! Integration tests for pg-typed.
 //! Requires: docker compose up -d (PostgreSQL on port 54322)
 
-use pg_typed::{Client, Decode, Encode};
+use pg_typed::{Client, Decode, Encode, FromRow};
 
 const ADDR: &str = "127.0.0.1:54322";
 const USER: &str = "postgres";
@@ -309,4 +309,213 @@ async fn test_sequential_typed_queries() {
         let n: i32 = rows[0].get(0).unwrap();
         assert_eq!(n, i);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Column names (RowDescription)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_column_names() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT 1::int4 AS id, 'hello'::text AS name", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows[0].column_name(0), Some("id"));
+    assert_eq!(rows[0].column_name(1), Some("name"));
+}
+
+#[tokio::test]
+async fn test_get_by_name() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT 42::int4 AS answer, 'hello'::text AS greeting", &[])
+        .await
+        .unwrap();
+    let answer: i32 = rows[0].get_by_name("answer").unwrap();
+    let greeting: String = rows[0].get_by_name("greeting").unwrap();
+    assert_eq!(answer, 42);
+    assert_eq!(greeting, "hello");
+}
+
+#[tokio::test]
+async fn test_get_by_name_not_found() {
+    let client = connect().await;
+    let rows = client.query("SELECT 1::int4 AS n", &[]).await.unwrap();
+    let result = rows[0].get_by_name::<i32>("nonexistent");
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_column_type_oids() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT 1::int4 AS n, 'hi'::text AS s", &[])
+        .await
+        .unwrap();
+    // int4 OID = 23, text OID = 25
+    assert_eq!(rows[0].column_type_oid(0), Some(23));
+    assert_eq!(rows[0].column_type_oid(1), Some(25));
+}
+
+// ---------------------------------------------------------------------------
+// Execute (INSERT/UPDATE/DELETE with row count)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_execute_insert_and_delete() {
+    let client = connect().await;
+
+    // Create a temp table.
+    client.simple_query("CREATE TEMP TABLE test_exec (id int)").await.unwrap();
+
+    // Insert rows.
+    let count = client
+        .execute("INSERT INTO test_exec VALUES ($1)", &[&1i32])
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let count = client
+        .execute("INSERT INTO test_exec VALUES ($1), ($2)", &[&2i32, &3i32])
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+
+    // Delete.
+    let count = client
+        .execute("DELETE FROM test_exec WHERE id > $1", &[&1i32])
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+
+    // Verify.
+    let rows = client.query("SELECT id FROM test_exec", &[]).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<i32>(0).unwrap(), 1);
+}
+
+#[tokio::test]
+async fn test_execute_update() {
+    let client = connect().await;
+    client.simple_query("CREATE TEMP TABLE test_upd (id int, val text)").await.unwrap();
+    client.execute("INSERT INTO test_upd VALUES ($1, $2)", &[&1i32, &"old"]).await.unwrap();
+    client.execute("INSERT INTO test_upd VALUES ($1, $2)", &[&2i32, &"old"]).await.unwrap();
+
+    let count = client
+        .execute("UPDATE test_upd SET val = $1 WHERE id = $2", &[&"new", &1i32])
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let rows = client
+        .query("SELECT val FROM test_upd WHERE id = $1", &[&1i32])
+        .await
+        .unwrap();
+    assert_eq!(rows[0].get::<String>(0).unwrap(), "new");
+}
+
+// ---------------------------------------------------------------------------
+// Transactions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_transaction_commit() {
+    let client = connect().await;
+    client.simple_query("CREATE TEMP TABLE test_txn (id int)").await.unwrap();
+
+    let txn = client.begin().await.unwrap();
+    txn.execute("INSERT INTO test_txn VALUES ($1)", &[&1i32]).await.unwrap();
+    txn.execute("INSERT INTO test_txn VALUES ($1)", &[&2i32]).await.unwrap();
+    txn.commit().await.unwrap();
+
+    let rows = client.query("SELECT id FROM test_txn ORDER BY id", &[]).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get::<i32>(0).unwrap(), 1);
+    assert_eq!(rows[1].get::<i32>(0).unwrap(), 2);
+}
+
+#[tokio::test]
+async fn test_transaction_rollback() {
+    let client = connect().await;
+    client.simple_query("CREATE TEMP TABLE test_txn_rb (id int)").await.unwrap();
+
+    let txn = client.begin().await.unwrap();
+    txn.execute("INSERT INTO test_txn_rb VALUES ($1)", &[&1i32]).await.unwrap();
+    txn.rollback().await.unwrap();
+
+    // Table should be empty — insert was rolled back.
+    let rows = client.query("SELECT id FROM test_txn_rb", &[]).await.unwrap();
+    assert_eq!(rows.len(), 0);
+}
+
+#[tokio::test]
+async fn test_transaction_query_inside() {
+    let client = connect().await;
+    client.simple_query("CREATE TEMP TABLE test_txn_q (id int)").await.unwrap();
+
+    let txn = client.begin().await.unwrap();
+    txn.execute(
+        "INSERT INTO test_txn_q VALUES ($1), ($2), ($3)",
+        &[&10i32, &20i32, &30i32],
+    ).await.unwrap();
+    let rows = txn.query("SELECT sum(id)::int4 FROM test_txn_q", &[]).await.unwrap();
+    let sum: i32 = rows[0].get(0).unwrap();
+    assert_eq!(sum, 60);
+    txn.commit().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Simple query
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_simple_query_ddl() {
+    let client = connect().await;
+    client.simple_query("CREATE TEMP TABLE test_simple (id int)").await.unwrap();
+    client.simple_query("DROP TABLE test_simple").await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// FromRow trait (manual impl)
+// ---------------------------------------------------------------------------
+
+struct Author {
+    id: i32,
+    name: String,
+}
+
+impl pg_typed::FromRow for Author {
+    fn from_row(row: &pg_typed::Row) -> Result<Self, pg_typed::TypedError> {
+        Ok(Author {
+            id: row.get_by_name("id")?,
+            name: row.get_by_name("name")?,
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_from_row_manual() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT id, name FROM api.authors WHERE id = $1", &[&1i32])
+        .await
+        .unwrap();
+    let author = Author::from_row(&rows[0]).unwrap();
+    assert_eq!(author.id, 1);
+    assert_eq!(author.name, "Alice");
+}
+
+#[tokio::test]
+async fn test_from_row_multiple() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT id, name FROM api.authors ORDER BY id", &[])
+        .await
+        .unwrap();
+    let authors: Vec<Author> = rows.iter().map(|r| Author::from_row(r).unwrap()).collect();
+    assert!(authors.len() >= 3);
+    assert_eq!(authors[0].name, "Alice");
+    assert_eq!(authors[1].name, "Bob");
 }

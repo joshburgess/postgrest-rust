@@ -37,6 +37,11 @@ pub enum FrontendMsg<'a> {
     Sync,
     /// Query: simple query protocol (text only).
     Query(&'a [u8]),
+    /// Describe: request description of a statement or portal.
+    Describe {
+        kind: u8, // b'S' = statement, b'P' = portal
+        name: &'a [u8],
+    },
     /// Close: close a prepared statement or portal.
     Close {
         kind: u8, // b'S' = statement, b'P' = portal
