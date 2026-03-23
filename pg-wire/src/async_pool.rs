@@ -58,39 +58,51 @@ impl AsyncPool {
             counter: AtomicUsize::new(0),
         });
 
-        // Spawn background health monitor.
+        // Spawn background health monitor. Uses a Weak reference so
+        // the monitor stops when the pool is dropped.
         {
-            let pool_ref = Arc::clone(&pool);
+            let pool_weak = Arc::downgrade(&pool);
             tokio::spawn(async move {
-                health_monitor(pool_ref).await;
+                health_monitor(pool_weak).await;
             });
         }
 
         Ok(pool)
     }
 
-    /// Get the next alive AsyncConn via round-robin.
-    /// If the selected connection is dead, tries the next one.
-    /// Falls back to any alive connection.
+    /// Get the next alive AsyncConn via round-robin (non-blocking best-effort).
+    /// Tries `try_read()` on each slot. If all slots are locked (reconnecting),
+    /// returns the last successfully read connection regardless of alive status.
     pub fn get(&self) -> Arc<AsyncConn> {
         let len = self.conns.len();
         let start = self.counter.fetch_add(1, Ordering::Relaxed) % len;
+        let mut fallback: Option<Arc<AsyncConn>> = None;
 
-        // Try round-robin starting from `start`.
         for i in 0..len {
             let idx = (start + i) % len;
-            // Fast path: try_read avoids blocking on the RwLock.
             if let Ok(conn) = self.conns[idx].try_read() {
                 if conn.is_alive() {
                     return Arc::clone(&conn);
                 }
+                fallback = Some(Arc::clone(&conn));
             }
         }
 
-        // All connections might be reconnecting. Block on the first one.
-        // This is the slow path — only happens during mass reconnection.
-        let conn = self.conns[start % len].blocking_read();
-        Arc::clone(&conn)
+        // All alive connections are locked or dead. Return any we could read.
+        if let Some(conn) = fallback {
+            return conn;
+        }
+
+        // Absolute last resort: all slots locked. Spin-try until one unlocks.
+        loop {
+            for i in 0..len {
+                let idx = (start + i) % len;
+                if let Ok(conn) = self.conns[idx].try_read() {
+                    return Arc::clone(&conn);
+                }
+            }
+            std::hint::spin_loop();
+        }
     }
 
     /// Get the next alive AsyncConn (async version for use in async contexts).
@@ -174,10 +186,19 @@ impl AsyncPool {
 }
 
 /// Background task that checks connection health and reconnects dead ones.
-async fn health_monitor(pool: Arc<AsyncPool>) {
+/// Stops automatically when the pool is dropped (Weak becomes invalid).
+async fn health_monitor(pool_weak: std::sync::Weak<AsyncPool>) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         interval.tick().await;
+
+        let pool = match pool_weak.upgrade() {
+            Some(p) => p,
+            None => {
+                tracing::debug!("pg-wire: health monitor stopping (pool dropped)");
+                return;
+            }
+        };
 
         for idx in 0..pool.conns.len() {
             let is_dead = {

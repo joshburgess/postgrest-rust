@@ -629,6 +629,97 @@ async fn test_pool_multiple_columns() {
 }
 
 // ---------------------------------------------------------------------------
+// All connections dead scenario
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pool_all_connections_dead_recovers() {
+    let pool = AsyncPool::connect(ADDR, USER, PASS, DB, 2)
+        .await
+        .unwrap();
+
+    // Collect all backend PIDs.
+    let mut pids = Vec::new();
+    for _ in 0..4 {
+        let rows = pool
+            .exec_query("SELECT pg_backend_pid()", &[], &[])
+            .await
+            .unwrap();
+        let pid = col_str(&rows[0][0]).parse::<i32>().unwrap();
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+
+    // Kill all backends.
+    let mut killer = WireConn::connect(ADDR, USER, PASS, DB).await.unwrap();
+    for pid in &pids {
+        kill_backend(&mut killer, *pid).await;
+    }
+
+    // Force detection by sending queries (they will fail).
+    for _ in 0..10 {
+        let _ = pool.exec_query("SELECT 1", &[], &[]).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Wait for health monitor to reconnect both slots.
+    let mut recovered = false;
+    for _ in 0..25 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if pool.alive_count().await == 2 {
+            recovered = true;
+            break;
+        }
+    }
+    assert!(recovered, "pool should recover all dead connections via health monitor");
+
+    // Verify queries work again.
+    let rows = pool.exec_query("SELECT 1 AS n", &[], &[]).await.unwrap();
+    assert_eq!(col_str(&rows[0][0]), "1");
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent access during reconnection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pool_concurrent_queries_during_reconnection() {
+    let pool = AsyncPool::connect(ADDR, USER, PASS, DB, 3)
+        .await
+        .unwrap();
+
+    // Kill one backend.
+    let rows = pool
+        .exec_query("SELECT pg_backend_pid()", &[], &[])
+        .await
+        .unwrap();
+    let pid = col_str(&rows[0][0]).parse::<i32>().unwrap();
+    let mut killer = WireConn::connect(ADDR, USER, PASS, DB).await.unwrap();
+    kill_backend(&mut killer, pid).await;
+
+    // Immediately fire concurrent queries — some will hit the dead connection,
+    // others will succeed on surviving connections.
+    let mut handles = Vec::new();
+    for i in 0..20 {
+        let pool = Arc::clone(&pool);
+        handles.push(tokio::spawn(async move {
+            pool.exec_query(&format!("SELECT {i}"), &[], &[]).await
+        }));
+    }
+
+    let mut successes = 0;
+    for h in handles {
+        if h.await.unwrap().is_ok() {
+            successes += 1;
+        }
+    }
+
+    // Most should succeed via surviving connections.
+    assert!(successes >= 10, "at least half should succeed, got {successes}");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

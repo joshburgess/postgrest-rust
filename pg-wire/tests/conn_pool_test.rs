@@ -942,8 +942,172 @@ async fn test_pool_create_with_invalid_address_and_min_idle() {
 }
 
 // ---------------------------------------------------------------------------
+// Drain correctness (missed-notification regression test)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_drain_completes_with_rapid_return() {
+    // Regression test: drain() must not hang when connections are returned
+    // at the same time drain starts (missed-notification bug).
+    let mut config = test_config();
+    config.min_idle = 0;
+    config.max_size = 5;
+    let pool = ConnPool::new(config, LifecycleHooks::default())
+        .await
+        .unwrap();
+
+    // Check out several connections.
+    let guards: Vec<_> = futures_collect(
+        (0..5).map(|_| {
+            let pool = Arc::clone(&pool);
+            async move { pool.get().await.unwrap() }
+        }),
+    )
+    .await;
+
+    assert_eq!(pool.metrics().in_use, 5);
+
+    // Spawn drain — it should wait for all to return.
+    let pool2 = Arc::clone(&pool);
+    let drain_handle = tokio::spawn(async move {
+        pool2.drain().await;
+    });
+
+    // Return all connections rapidly in parallel.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(guards);
+
+    // Drain should complete within a reasonable time.
+    tokio::time::timeout(Duration::from_secs(5), drain_handle)
+        .await
+        .expect("drain should not hang")
+        .unwrap();
+
+    assert_eq!(pool.metrics().total, 0);
+}
+
+#[tokio::test]
+async fn test_drain_with_no_connections() {
+    // Drain on empty pool (total_count already 0) should return immediately.
+    let mut config = test_config();
+    config.min_idle = 0;
+    let pool = ConnPool::new(config, LifecycleHooks::default())
+        .await
+        .unwrap();
+
+    assert_eq!(pool.metrics().total, 0);
+
+    // Should not hang.
+    tokio::time::timeout(Duration::from_secs(1), pool.drain())
+        .await
+        .expect("drain on empty pool should complete immediately");
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance max_size enforcement
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_maintenance_does_not_exceed_max_size() {
+    let mut config = test_config();
+    config.min_idle = 3;
+    config.max_size = 3;
+    config.maintenance_interval = Duration::from_millis(100); // fast maintenance
+    let pool = ConnPool::new(config, LifecycleHooks::default())
+        .await
+        .unwrap();
+
+    // Check out all connections to trigger maintenance replenishment.
+    let g1 = pool.get().await.unwrap();
+    let g2 = pool.get().await.unwrap();
+    let g3 = pool.get().await.unwrap();
+
+    // While all 3 are checked out, maintenance will try to replenish.
+    // It must NOT exceed max_size=3.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let m = pool.metrics();
+    assert!(m.total <= 3, "maintenance must not exceed max_size, got total={}", m.total);
+
+    drop(g1);
+    drop(g2);
+    drop(g3);
+}
+
+#[tokio::test]
+async fn test_concurrent_get_does_not_exceed_max_size() {
+    let mut config = test_config();
+    config.min_idle = 0;
+    config.max_size = 3;
+    config.checkout_timeout = Duration::from_secs(5);
+    let pool = ConnPool::new(config, LifecycleHooks::default())
+        .await
+        .unwrap();
+
+    // Spawn 10 concurrent gets. Only 3 should succeed at a time.
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let pool = Arc::clone(&pool);
+        handles.push(tokio::spawn(async move {
+            let g = pool.get().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(g);
+        }));
+    }
+
+    // Check pool doesn't overshoot.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let m = pool.metrics();
+    assert!(m.total <= 3, "concurrent gets must respect max_size, got total={}", m.total);
+
+    for h in handles {
+        h.await.unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AsyncConn reader notify (regression: no busy-wait)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_async_conn_no_cpu_spin_when_idle() {
+    // Verify that an idle AsyncConn doesn't burn CPU.
+    // We can't measure CPU directly, but we can verify it works
+    // correctly after being idle for a while.
+    let conn = pg_wire::AsyncConn::new(
+        pg_wire::WireConn::connect(ADDR, USER, PASS, DB).await.unwrap()
+    );
+
+    // Let the reader sit idle.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Now execute a query — should work fine.
+    let rows = conn.exec_query("SELECT 1 AS n", &[], &[]).await.unwrap();
+    assert_eq!(col_str(&rows[0][0]), "1");
+
+    // And another after more idle time.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let rows = conn.exec_query("SELECT 2 AS n", &[], &[]).await.unwrap();
+    assert_eq!(col_str(&rows[0][0]), "2");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Collect futures concurrently (simple join_all replacement).
+async fn futures_collect<F, T>(futs: impl IntoIterator<Item = F>) -> Vec<T>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let handles: Vec<_> = futs.into_iter().map(tokio::spawn).collect();
+    let mut results = Vec::with_capacity(handles.len());
+    for h in handles {
+        results.push(h.await.unwrap());
+    }
+    results
+}
 
 /// Send a simple query via WireConn's raw protocol and collect rows.
 async fn send_query(

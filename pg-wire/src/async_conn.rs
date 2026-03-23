@@ -79,6 +79,7 @@ impl AsyncConn {
         let (request_tx, request_rx) = mpsc::channel::<PipelineRequest>(256);
         let pending: Arc<Mutex<VecDeque<PendingResponse>>> =
             Arc::new(Mutex::new(VecDeque::new()));
+        let pending_notify = Arc::new(tokio::sync::Notify::new());
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let (stream_read, stream_write) = tokio::io::split(conn.into_stream());
@@ -86,9 +87,10 @@ impl AsyncConn {
         // Spawn writer task — sets alive=false on exit.
         {
             let pending = Arc::clone(&pending);
+            let pending_notify = Arc::clone(&pending_notify);
             let alive = Arc::clone(&alive);
             tokio::spawn(async move {
-                writer_task(request_rx, stream_write, pending).await;
+                writer_task(request_rx, stream_write, pending, pending_notify).await;
                 alive.store(false, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!("pg-wire writer task exited");
             });
@@ -97,9 +99,10 @@ impl AsyncConn {
         // Spawn reader task — sets alive=false on exit.
         {
             let pending = Arc::clone(&pending);
+            let pending_notify = Arc::clone(&pending_notify);
             let alive_clone = Arc::clone(&alive);
             tokio::spawn(async move {
-                reader_task(stream_read, pending).await;
+                reader_task(stream_read, pending, pending_notify).await;
                 alive_clone.store(false, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!("pg-wire reader task exited");
             });
@@ -353,6 +356,7 @@ async fn writer_task(
     mut rx: mpsc::Receiver<PipelineRequest>,
     mut stream: tokio::io::WriteHalf<TcpStream>,
     pending: Arc<Mutex<VecDeque<PendingResponse>>>,
+    pending_notify: Arc<tokio::sync::Notify>,
 ) {
     let mut write_buf = BytesMut::with_capacity(8192);
 
@@ -388,6 +392,8 @@ async fn writer_task(
                 pq.push_back(p);
             }
         }
+        // Wake the reader task so it can process the newly enqueued responses.
+        pending_notify.notify_one();
 
         // ONE write() syscall for all coalesced messages.
         if let Err(e) = stream.write_all(&write_buf).await {
@@ -408,19 +414,21 @@ async fn writer_task(
 async fn reader_task(
     mut stream: tokio::io::ReadHalf<TcpStream>,
     pending: Arc<Mutex<VecDeque<PendingResponse>>>,
+    pending_notify: Arc<tokio::sync::Notify>,
 ) {
     let mut recv_buf = BytesMut::with_capacity(32 * 1024);
 
     loop {
         // Wait for a pending response to become available.
         let pr = loop {
-            let mut pq = pending.lock().await;
-            if let Some(pr) = pq.pop_front() {
-                break pr;
+            {
+                let mut pq = pending.lock().await;
+                if let Some(pr) = pq.pop_front() {
+                    break pr;
+                }
             }
-            drop(pq);
-            // No pending — wait a bit then retry.
-            tokio::task::yield_now().await;
+            // No pending — wait for the writer to signal.
+            pending_notify.notified().await;
         };
 
         // Collect the response based on the collector type.

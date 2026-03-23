@@ -460,8 +460,14 @@ impl ConnPool {
         }
 
         // Wait for all in-use connections to be returned.
-        while self.total_count.load(Ordering::Relaxed) > 0 {
-            self.drain_complete.notified().await;
+        // Use the Notify enable pattern to avoid missed notifications:
+        // register interest BEFORE checking the condition.
+        loop {
+            let notified = self.drain_complete.notified();
+            if self.total_count.load(Ordering::Relaxed) == 0 {
+                break;
+            }
+            notified.await;
         }
 
         // Signal shutdown to maintenance task.
@@ -578,15 +584,24 @@ async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<(
             let to_create = (pool.config.min_idle - current_idle)
                 .min(pool.config.max_size - total);
             for _ in 0..to_create {
-                match pool.create_connection().await {
-                    Ok(idle_conn) => {
-                        pool.total_count.fetch_add(1, Ordering::Relaxed);
-                        pool.idle.lock().await.push_back(idle_conn);
+                // Use create_and_track to atomically check max_size before creating.
+                match pool.create_and_track().await {
+                    Ok(conn) => {
+                        let jitter = jittered_duration(
+                            pool.config.max_lifetime,
+                            pool.config.max_lifetime_jitter,
+                        );
+                        let mut idle = pool.idle.lock().await;
+                        idle.push_back(IdleConn {
+                            conn,
+                            expires_at: Instant::now() + jitter,
+                        });
+                        // create_and_track already incremented total_count,
+                        // but we need to move from "in-use" to "idle" accounting.
+                        // create_and_track increments total_count but NOT in_use_count,
+                        // so the connection is effectively idle once pushed.
                     }
-                    Err(e) => {
-                        tracing::warn!("Maintenance: failed to create connection: {e}");
-                        break;
-                    }
+                    Err(_) => break,
                 }
             }
         }
