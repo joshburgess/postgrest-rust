@@ -35,9 +35,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .patch(handle_update)
                 .delete(handle_delete),
         )
-        .layer(TraceLayer::new_for_http())
-        .layer(cors)
         .layer(RequestBodyLimitLayer::new(state.config.server.body_limit));
+
+    // Only add CORS + Trace layers if not in benchmark mode.
+    // These layers clone per-connection and dominate CPU at high throughput.
+    if std::env::var("PG_REST_LEAN").is_err() {
+        app = app
+            .layer(TraceLayer::new_for_http())
+            .layer(cors);
+    }
 
     // Rate limiting (requests/sec, 0 = unlimited).
     // Applied via ConcurrencyLimit as a simpler alternative that's Clone-compatible.
