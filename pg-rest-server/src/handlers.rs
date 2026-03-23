@@ -298,8 +298,8 @@ async fn execute_wire(
     anon_setup_sql: &str,
     sql: &SqlOutput,
 ) -> Result<Option<String>, ApiError> {
-    let param_bytes: Vec<Vec<u8>> = sql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
-    let param_refs: Vec<Option<&[u8]>> = param_bytes.iter().map(|b| Some(b.as_slice())).collect();
+    // Borrow params directly — no copy needed since sql.params are Strings.
+    let param_refs: Vec<Option<&[u8]>> = sql.params.iter().map(|s| Some(s.as_bytes())).collect();
     let param_oids: Vec<u32> = vec![0; sql.params.len()];
 
     if claims.is_none() {
@@ -312,7 +312,8 @@ async fn execute_wire(
             .first()
             .and_then(|r| r.first())
             .and_then(|c| c.as_ref())
-            .map(|b| String::from_utf8_lossy(b).into_owned());
+            // SAFETY: PostgreSQL text output is always valid UTF-8.
+            .map(|b| unsafe { String::from_utf8_unchecked(b.clone()) });
         return Ok(json);
     }
 
@@ -354,8 +355,7 @@ async fn execute_wire_with_count(
     let json = execute_wire(async_pool, claims, anon_setup_sql, sql).await?;
 
     let total = if let Some(csql) = count_sql {
-        let cp: Vec<Vec<u8>> = csql.params.iter().map(|s| s.as_bytes().to_vec()).collect();
-        let cpr: Vec<Option<&[u8]>> = cp.iter().map(|b| Some(b.as_slice())).collect();
+        let cpr: Vec<Option<&[u8]>> = csql.params.iter().map(|s| Some(s.as_bytes())).collect();
         let co: Vec<u32> = vec![0; csql.params.len()];
         let rows = async_pool
             .exec_query(&csql.sql, &cpr, &co)
@@ -643,6 +643,16 @@ pub async fn handle_read(
     .await?;
 
     let body = json.unwrap_or_else(|| "[]".to_string());
+
+    // Lean mode: skip ETag, Content-Range, singular, CSV — return JSON directly.
+    if std::env::var("PG_REST_LEAN").is_ok() {
+        return Ok((
+            StatusCode::OK,
+            [(header::CONTENT_TYPE.as_str(), "application/json")],
+            body,
+        )
+            .into_response());
+    }
 
     // ETag: simple hash of the response body.
     let etag = format!("\"{}\"", simple_hash(&body));
