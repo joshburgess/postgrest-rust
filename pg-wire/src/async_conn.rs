@@ -1,0 +1,484 @@
+//! Async split sender/receiver connection.
+//! Inspired by hsqlx's PgWire.Async architecture.
+//!
+//! A single TCP connection is shared by many concurrent handler tasks.
+//! The writer task coalesces messages from multiple requests into one write().
+//! The reader task parses responses and dispatches them to waiting handlers via FIFO.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use bytes::BytesMut;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::{mpsc, oneshot, Mutex};
+
+use crate::connection::WireConn;
+use crate::error::PgWireError;
+use crate::protocol::backend;
+use crate::protocol::frontend;
+use crate::protocol::types::{BackendMsg, FormatCode, FrontendMsg};
+
+// ---------------------------------------------------------------------------
+// Request types
+// ---------------------------------------------------------------------------
+
+/// A request to execute on the connection.
+pub struct PipelineRequest {
+    /// Pre-encoded wire messages (Parse+Bind+Execute+Sync or Query).
+    pub messages: BytesMut,
+    /// How to collect the response.
+    pub collector: ResponseCollector,
+    /// Channel to send the response back to the caller.
+    pub response_tx: oneshot::Sender<Result<PipelineResponse, PgWireError>>,
+}
+
+/// How to collect response messages for a request.
+#[derive(Debug, Clone)]
+pub enum ResponseCollector {
+    /// Collect DataRows until ReadyForQuery (for SELECT queries).
+    Rows,
+    /// Just drain until ReadyForQuery (for setup commands like BEGIN, SET ROLE).
+    Drain,
+}
+
+/// Response from a pipeline request.
+pub enum PipelineResponse {
+    Rows(Vec<Vec<Option<Vec<u8>>>>),
+    Done,
+}
+
+// ---------------------------------------------------------------------------
+// Async connection
+// ---------------------------------------------------------------------------
+
+/// A shared async connection that multiplexes requests from many tasks.
+pub struct AsyncConn {
+    request_tx: mpsc::Sender<PipelineRequest>,
+    stmt_cache: std::sync::Mutex<std::collections::HashMap<String, (String, u64)>>,
+    stmt_counter: std::sync::atomic::AtomicU64,
+}
+
+struct PendingResponse {
+    collector: ResponseCollector,
+    response_tx: oneshot::Sender<Result<PipelineResponse, PgWireError>>,
+}
+
+impl AsyncConn {
+    /// Create a new async connection from a raw WireConn.
+    /// Spawns writer and reader tasks.
+    pub fn new(conn: WireConn) -> Self {
+        let (request_tx, request_rx) = mpsc::channel::<PipelineRequest>(256);
+        let pending: Arc<Mutex<VecDeque<PendingResponse>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+
+        let (stream_read, stream_write) = tokio::io::split(conn.into_stream());
+
+        // Spawn writer task.
+        {
+            let pending = Arc::clone(&pending);
+            tokio::spawn(writer_task(request_rx, stream_write, pending));
+        }
+
+        // Spawn reader task.
+        {
+            let pending = Arc::clone(&pending);
+            tokio::spawn(reader_task(stream_read, pending));
+        }
+
+        Self {
+            request_tx,
+            stmt_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            stmt_counter: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Look up or allocate a statement name.
+    fn lookup_or_alloc(&self, sql: &str) -> (Vec<u8>, bool) {
+        let mut cache = self.stmt_cache.lock().unwrap();
+        if let Some((name, _)) = cache.get(sql) {
+            return (name.as_bytes().to_vec(), false);
+        }
+        // Evict if too large.
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        let n = self.stmt_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!("s{n}");
+        cache.insert(sql.to_string(), (name.clone(), n));
+        (name.into_bytes(), true)
+    }
+
+    /// Execute a pipelined transaction with automatic statement caching.
+    pub async fn exec_transaction(
+        &self,
+        setup_sql: &str,
+        query_sql: &str,
+        params: &[Option<&[u8]>],
+        param_oids: &[u32],
+    ) -> Result<Vec<Vec<Option<Vec<u8>>>>, PgWireError> {
+        let (stmt_name, needs_parse) = self.lookup_or_alloc(query_sql);
+        self.pipeline_transaction(setup_sql, query_sql, params, param_oids, &stmt_name, needs_parse)
+            .await
+    }
+
+    /// Execute a parameterized query with automatic statement caching.
+    pub async fn exec_query(
+        &self,
+        sql: &str,
+        params: &[Option<&[u8]>],
+        param_oids: &[u32],
+    ) -> Result<Vec<Vec<Option<Vec<u8>>>>, PgWireError> {
+        let (stmt_name, needs_parse) = self.lookup_or_alloc(sql);
+        self.query(sql, params, param_oids, &stmt_name, needs_parse)
+            .await
+    }
+
+    /// Submit a request to the connection. Returns a future that resolves
+    /// when the response is available.
+    pub async fn submit(
+        &self,
+        messages: BytesMut,
+        collector: ResponseCollector,
+    ) -> Result<PipelineResponse, PgWireError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let req = PipelineRequest {
+            messages,
+            collector,
+            response_tx,
+        };
+        self.request_tx
+            .send(req)
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)?;
+        response_rx
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)?
+    }
+
+    /// Execute a pipelined transaction:
+    /// setup (simple query) + data query (extended protocol) + COMMIT (simple query)
+    /// All coalesced into one TCP write. Binary-safe parameterized data query.
+    pub async fn pipeline_transaction(
+        &self,
+        setup_sql: &str,
+        query_sql: &str,
+        params: &[Option<&[u8]>],
+        param_oids: &[u32],
+        stmt_name: &[u8],
+        needs_parse: bool,
+    ) -> Result<Vec<Vec<Option<Vec<u8>>>>, PgWireError> {
+        let mut buf = BytesMut::with_capacity(1024);
+
+        // 1. Simple query for setup (BEGIN + SET ROLE + set_config).
+        frontend::encode_message(&FrontendMsg::Query(setup_sql.as_bytes()), &mut buf);
+
+        // Submit setup as Drain — we don't care about its response data.
+        let setup_msgs = buf.split();
+
+        // 2. Extended query for data.
+        let text_fmts: Vec<FormatCode> = vec![FormatCode::Text; params.len().max(1)];
+        let result_fmts = [FormatCode::Text];
+
+        if needs_parse {
+            frontend::encode_message(
+                &FrontendMsg::Parse {
+                    name: stmt_name,
+                    sql: query_sql.as_bytes(),
+                    param_oids,
+                },
+                &mut buf,
+            );
+        }
+
+        frontend::encode_message(
+            &FrontendMsg::Bind {
+                portal: b"",
+                statement: stmt_name,
+                param_formats: &text_fmts[..params.len()],
+                params,
+                result_formats: &result_fmts,
+            },
+            &mut buf,
+        );
+
+        frontend::encode_message(
+            &FrontendMsg::Execute {
+                portal: b"",
+                max_rows: 0,
+            },
+            &mut buf,
+        );
+
+        frontend::encode_message(&FrontendMsg::Sync, &mut buf);
+
+        // 3. Simple query for COMMIT.
+        frontend::encode_message(&FrontendMsg::Query(b"COMMIT"), &mut buf);
+
+        let data_msgs = buf.split();
+
+        // Submit all three as separate requests with different collectors.
+        // They'll be coalesced by the writer into one write() syscall.
+        let (setup_tx, setup_rx) = oneshot::channel();
+        let (data_tx, data_rx) = oneshot::channel();
+        let (commit_tx, commit_rx) = oneshot::channel();
+
+        // Send all three requests to the writer channel.
+        // The writer drains the channel and writes them all at once.
+        self.request_tx
+            .send(PipelineRequest {
+                messages: setup_msgs,
+                collector: ResponseCollector::Drain,
+                response_tx: setup_tx,
+            })
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)?;
+
+        self.request_tx
+            .send(PipelineRequest {
+                messages: data_msgs,
+                collector: ResponseCollector::Rows,
+                response_tx: data_tx,
+            })
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)?;
+
+        self.request_tx
+            .send(PipelineRequest {
+                messages: BytesMut::new(), // COMMIT already in data_msgs
+                collector: ResponseCollector::Drain,
+                response_tx: commit_tx,
+            })
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)?;
+
+        // Wait for all responses.
+        setup_rx
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)??;
+
+        let data_resp = data_rx
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)??;
+
+        commit_rx
+            .await
+            .map_err(|_| PgWireError::ConnectionClosed)??;
+
+        match data_resp {
+            PipelineResponse::Rows(rows) => Ok(rows),
+            PipelineResponse::Done => Ok(Vec::new()),
+        }
+    }
+
+    /// Execute a simple parameterized query (no transaction).
+    pub async fn query(
+        &self,
+        sql: &str,
+        params: &[Option<&[u8]>],
+        param_oids: &[u32],
+        stmt_name: &[u8],
+        needs_parse: bool,
+    ) -> Result<Vec<Vec<Option<Vec<u8>>>>, PgWireError> {
+        let mut buf = BytesMut::with_capacity(512);
+
+        let text_fmts: Vec<FormatCode> = vec![FormatCode::Text; params.len().max(1)];
+        let result_fmts = [FormatCode::Text];
+
+        if needs_parse {
+            frontend::encode_message(
+                &FrontendMsg::Parse {
+                    name: stmt_name,
+                    sql: sql.as_bytes(),
+                    param_oids,
+                },
+                &mut buf,
+            );
+        }
+
+        frontend::encode_message(
+            &FrontendMsg::Bind {
+                portal: b"",
+                statement: stmt_name,
+                param_formats: &text_fmts[..params.len()],
+                params,
+                result_formats: &result_fmts,
+            },
+            &mut buf,
+        );
+
+        frontend::encode_message(
+            &FrontendMsg::Execute {
+                portal: b"",
+                max_rows: 0,
+            },
+            &mut buf,
+        );
+
+        frontend::encode_message(&FrontendMsg::Sync, &mut buf);
+
+        let resp = self.submit(buf, ResponseCollector::Rows).await?;
+        match resp {
+            PipelineResponse::Rows(rows) => Ok(rows),
+            PipelineResponse::Done => Ok(Vec::new()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Writer task
+// ---------------------------------------------------------------------------
+
+async fn writer_task(
+    mut rx: mpsc::Receiver<PipelineRequest>,
+    mut stream: tokio::io::WriteHalf<TcpStream>,
+    pending: Arc<Mutex<VecDeque<PendingResponse>>>,
+) {
+    let mut write_buf = BytesMut::with_capacity(8192);
+
+    loop {
+        // Wait for the first request.
+        let first = match rx.recv().await {
+            Some(req) => req,
+            None => return, // Channel closed.
+        };
+
+        // Drain any additional queued requests (batch coalescing).
+        write_buf.clear();
+        write_buf.extend_from_slice(&first.messages);
+
+        let mut batch: Vec<PendingResponse> = vec![PendingResponse {
+            collector: first.collector,
+            response_tx: first.response_tx,
+        }];
+
+        // Non-blocking drain of all queued requests.
+        while let Ok(req) = rx.try_recv() {
+            write_buf.extend_from_slice(&req.messages);
+            batch.push(PendingResponse {
+                collector: req.collector,
+                response_tx: req.response_tx,
+            });
+        }
+
+        // Enqueue pending responses for the reader (FIFO order).
+        {
+            let mut pq = pending.lock().await;
+            for p in batch {
+                pq.push_back(p);
+            }
+        }
+
+        // ONE write() syscall for all coalesced messages.
+        if let Err(e) = stream.write_all(&write_buf).await {
+            tracing::error!("Writer error: {e}");
+            return;
+        }
+        if let Err(e) = stream.flush().await {
+            tracing::error!("Writer flush error: {e}");
+            return;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reader task
+// ---------------------------------------------------------------------------
+
+async fn reader_task(
+    mut stream: tokio::io::ReadHalf<TcpStream>,
+    pending: Arc<Mutex<VecDeque<PendingResponse>>>,
+) {
+    let mut recv_buf = BytesMut::with_capacity(32 * 1024);
+
+    loop {
+        // Wait for a pending response to become available.
+        let pr = loop {
+            let mut pq = pending.lock().await;
+            if let Some(pr) = pq.pop_front() {
+                break pr;
+            }
+            drop(pq);
+            // No pending — wait a bit then retry.
+            tokio::task::yield_now().await;
+        };
+
+        // Collect the response based on the collector type.
+        let result = match pr.collector {
+            ResponseCollector::Rows => collect_rows(&mut stream, &mut recv_buf).await,
+            ResponseCollector::Drain => {
+                drain_until_ready(&mut stream, &mut recv_buf)
+                    .await
+                    .map(|_| PipelineResponse::Done)
+            }
+        };
+
+        // Send the response back to the caller.
+        let _ = pr.response_tx.send(result);
+    }
+}
+
+async fn read_msg(
+    stream: &mut tokio::io::ReadHalf<TcpStream>,
+    buf: &mut BytesMut,
+) -> Result<BackendMsg, PgWireError> {
+    loop {
+        if let Some(msg) = backend::parse_message(buf).map_err(PgWireError::Protocol)? {
+            return Ok(msg);
+        }
+        let n = stream.read_buf(buf).await?;
+        if n == 0 {
+            return Err(PgWireError::ConnectionClosed);
+        }
+    }
+}
+
+async fn collect_rows(
+    stream: &mut tokio::io::ReadHalf<TcpStream>,
+    buf: &mut BytesMut,
+) -> Result<PipelineResponse, PgWireError> {
+    let mut rows = Vec::new();
+    loop {
+        let msg = read_msg(stream, buf).await?;
+        match msg {
+            BackendMsg::DataRow { columns } => rows.push(columns),
+            BackendMsg::ReadyForQuery { .. } => return Ok(PipelineResponse::Rows(rows)),
+            BackendMsg::ErrorResponse { fields } => {
+                // Drain until ReadyForQuery to recover.
+                drain_until_ready(stream, buf).await?;
+                return Err(PgWireError::Pg(fields));
+            }
+            // Skip protocol overhead messages.
+            BackendMsg::ParseComplete
+            | BackendMsg::BindComplete
+            | BackendMsg::NoData
+            | BackendMsg::RowDescription { .. }
+            | BackendMsg::CommandComplete { .. }
+            | BackendMsg::NoticeResponse { .. }
+            | BackendMsg::EmptyQueryResponse => {}
+            _ => {}
+        }
+    }
+}
+
+async fn drain_until_ready(
+    stream: &mut tokio::io::ReadHalf<TcpStream>,
+    buf: &mut BytesMut,
+) -> Result<(), PgWireError> {
+    loop {
+        let msg = read_msg(stream, buf).await?;
+        if matches!(msg, BackendMsg::ReadyForQuery { .. }) {
+            return Ok(());
+        }
+        if let BackendMsg::ErrorResponse { ref fields } = msg {
+            tracing::warn!("Error in drain: {}: {}", fields.code, fields.message);
+        }
+    }
+}
+
+// Extension to WireConn to extract the raw TcpStream.
+impl WireConn {
+    pub fn into_stream(self) -> TcpStream {
+        self.stream
+    }
+}

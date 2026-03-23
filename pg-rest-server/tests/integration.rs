@@ -63,15 +63,22 @@ async fn setup() -> axum::Router {
 
     let wire_pool = pg_wire::Pool::new(pg_wire::PoolConfig {
         addr: "127.0.0.1:54322".to_string(),
-        user: DB_URI.split("//").nth(1).unwrap().split(':').next().unwrap().to_string(),
-        password: DB_URI.split(':').nth(2).unwrap().split('@').next().unwrap().to_string(),
+        user: "authenticator".to_string(),
+        password: "authenticator".to_string(),
         database: "postgrest_test".to_string(),
         max_size: 5,
     });
 
+    let async_conn = {
+        let conn = pg_wire::WireConn::connect("127.0.0.1:54322", "authenticator", "authenticator", "postgrest_test")
+            .await.unwrap();
+        Arc::new(pg_wire::AsyncConn::new(conn))
+    };
+
     let state = Arc::new(AppState {
         pool,
         wire_pool,
+        async_conn,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),

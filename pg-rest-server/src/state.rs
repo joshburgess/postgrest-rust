@@ -9,6 +9,8 @@ pub struct AppState {
     pub pool: deadpool_postgres::Pool,
     /// pg-wire connection pool for the hot path (pipelined binary protocol).
     pub wire_pool: Arc<pg_wire::Pool>,
+    /// Async connection for concurrent request handling (writer/reader split).
+    pub async_conn: Arc<pg_wire::AsyncConn>,
     pub schema_cache: watch::Receiver<Arc<SchemaCache>>,
     pub schema_cache_tx: watch::Sender<Arc<SchemaCache>>,
     /// Cached OpenAPI specs: (v2_json, v3_json). Regenerated on schema reload.

@@ -111,18 +111,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         v
     };
 
-    // 7. Create pg-wire pool for the hot path.
-    let wire_pool = {
-        // Parse postgres:// URI into components for pg-wire.
-        let uri = &config.database.uri;
-        let (user, password, host, port, database) = parse_pg_uri(uri);
-        pg_wire::Pool::new(pg_wire::PoolConfig {
-            addr: format!("{host}:{port}"),
-            user,
-            password,
-            database,
-            max_size: config.database.pool_size,
-        })
+    // 7. Create pg-wire pool and async connection for the hot path.
+    let (user, password, host, port, database) = parse_pg_uri(&config.database.uri);
+    let wire_addr = format!("{host}:{port}");
+
+    let wire_pool = pg_wire::Pool::new(pg_wire::PoolConfig {
+        addr: wire_addr.clone(),
+        user: user.clone(),
+        password: password.clone(),
+        database: database.clone(),
+        max_size: config.database.pool_size,
+    });
+
+    let async_conn = {
+        let conn = pg_wire::WireConn::connect(&wire_addr, &user, &password, &database)
+            .await?;
+        Arc::new(pg_wire::AsyncConn::new(conn))
     };
 
     // 8. Build application state + router.
@@ -130,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         pool,
         wire_pool,
+        async_conn,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),

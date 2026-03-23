@@ -11,7 +11,7 @@ use crate::scram::ScramClient;
 /// Raw PostgreSQL wire connection.
 /// Handles TCP I/O, buffered reading, and authentication.
 pub struct WireConn {
-    stream: TcpStream,
+    pub(crate) stream: TcpStream,
     recv_buf: BytesMut,
     pub pid: i32,
     pub secret: i32,
