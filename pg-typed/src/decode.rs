@@ -115,6 +115,106 @@ impl Decode for Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Chrono types (behind "chrono" feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "chrono")]
+const PG_EPOCH_OFFSET_US: i64 = 946_684_800_000_000;
+
+#[cfg(feature = "chrono")]
+impl Decode for chrono::NaiveDateTime {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        let us = i64::decode(buf)?;
+        let unix_us = us + PG_EPOCH_OFFSET_US;
+        chrono::DateTime::from_timestamp_micros(unix_us)
+            .map(|dt| dt.naive_utc())
+            .ok_or_else(|| TypedError::Decode {
+                column: 0,
+                message: format!("NaiveDateTime: invalid microseconds {us}"),
+            })
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl Decode for chrono::DateTime<chrono::Utc> {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        let us = i64::decode(buf)?;
+        let unix_us = us + PG_EPOCH_OFFSET_US;
+        chrono::DateTime::from_timestamp_micros(unix_us).ok_or_else(|| TypedError::Decode {
+            column: 0,
+            message: format!("DateTime<Utc>: invalid microseconds {us}"),
+        })
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl Decode for chrono::NaiveDate {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        let days = i32::decode(buf)?;
+        let pg_epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+        pg_epoch
+            .checked_add_signed(chrono::Duration::days(days as i64))
+            .ok_or_else(|| TypedError::Decode {
+                column: 0,
+                message: format!("NaiveDate: invalid days offset {days}"),
+            })
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl Decode for chrono::NaiveTime {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        let us = i64::decode(buf)?;
+        let secs = (us / 1_000_000) as u32;
+        let nano = ((us % 1_000_000) * 1000) as u32;
+        chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, nano).ok_or_else(|| {
+            TypedError::Decode {
+                column: 0,
+                message: format!("NaiveTime: invalid microseconds {us}"),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON types (behind "json" feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "json")]
+impl Decode for serde_json::Value {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        // JSONB binary: first byte is version (1), rest is JSON text.
+        // JSON binary: just JSON text.
+        let text = if !buf.is_empty() && buf[0] == 1 {
+            &buf[1..] // Skip JSONB version byte.
+        } else {
+            buf
+        };
+        serde_json::from_slice(text).map_err(|e| TypedError::Decode {
+            column: 0,
+            message: format!("JSON: {e}"),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UUID (behind "uuid" feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "uuid")]
+impl Decode for uuid::Uuid {
+    fn decode(buf: &[u8]) -> Result<Self, TypedError> {
+        if buf.len() != 16 {
+            return Err(TypedError::Decode {
+                column: 0,
+                message: format!("UUID: expected 16 bytes, got {}", buf.len()),
+            });
+        }
+        Ok(uuid::Uuid::from_bytes(buf.try_into().unwrap()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Text-format fallback decode
 // ---------------------------------------------------------------------------
 
@@ -166,5 +266,84 @@ impl DecodeText for f64 {
 impl DecodeText for String {
     fn decode_text(s: &str) -> Result<Self, TypedError> {
         Ok(s.to_string())
+    }
+}
+
+impl DecodeText for Vec<u8> {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        // PG text format for bytea: hex encoding (\x...) or escape format.
+        if let Some(hex) = s.strip_prefix("\\x") {
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| {
+                    u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| TypedError::Decode {
+                        column: 0,
+                        message: format!("bytea: invalid hex at offset {i}"),
+                    })
+                })
+                .collect()
+        } else {
+            Ok(s.as_bytes().to_vec())
+        }
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl DecodeText for chrono::NaiveDateTime {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        s.parse().map_err(|e| TypedError::Decode {
+            column: 0,
+            message: format!("NaiveDateTime: {e}"),
+        })
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl DecodeText for chrono::DateTime<chrono::Utc> {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        s.parse().map_err(|e| TypedError::Decode {
+            column: 0,
+            message: format!("DateTime<Utc>: {e}"),
+        })
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl DecodeText for chrono::NaiveDate {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        s.parse().map_err(|e| TypedError::Decode {
+            column: 0,
+            message: format!("NaiveDate: {e}"),
+        })
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl DecodeText for chrono::NaiveTime {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        s.parse().map_err(|e| TypedError::Decode {
+            column: 0,
+            message: format!("NaiveTime: {e}"),
+        })
+    }
+}
+
+#[cfg(feature = "json")]
+impl DecodeText for serde_json::Value {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        serde_json::from_str(s).map_err(|e| TypedError::Decode {
+            column: 0,
+            message: format!("JSON: {e}"),
+        })
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl DecodeText for uuid::Uuid {
+    fn decode_text(s: &str) -> Result<Self, TypedError> {
+        s.parse().map_err(|e| TypedError::Decode {
+            column: 0,
+            message: format!("UUID: {e}"),
+        })
     }
 }

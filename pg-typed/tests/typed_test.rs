@@ -1,7 +1,7 @@
 //! Integration tests for pg-typed.
 //! Requires: docker compose up -d (PostgreSQL on port 54322)
 
-use pg_typed::{Client, Decode, Encode, FromRow};
+use pg_typed::{Client, Decode, Encode, FromRow, SqlParam};
 
 const ADDR: &str = "127.0.0.1:54322";
 const USER: &str = "postgres";
@@ -518,4 +518,183 @@ async fn test_from_row_multiple() {
     assert!(authors.len() >= 3);
     assert_eq!(authors[0].name, "Alice");
     assert_eq!(authors[1].name, "Bob");
+}
+
+// ---------------------------------------------------------------------------
+// Nullable parameters
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_null_param() {
+    let client = connect().await;
+    let val: Option<i32> = None;
+    let rows = client.query("SELECT $1::int4 IS NULL AS is_null", &[&val]).await.unwrap();
+    let is_null: bool = rows[0].get(0).unwrap();
+    assert!(is_null);
+}
+
+#[tokio::test]
+async fn test_some_param() {
+    let client = connect().await;
+    let val: Option<i32> = Some(42);
+    let rows = client.query("SELECT $1::int4 AS n", &[&val]).await.unwrap();
+    let n: i32 = rows[0].get(0).unwrap();
+    assert_eq!(n, 42);
+}
+
+#[tokio::test]
+async fn test_null_text_param() {
+    let client = connect().await;
+    let val: Option<String> = None;
+    let rows = client.query("SELECT $1::text IS NULL AS is_null", &[&val]).await.unwrap();
+    let is_null: bool = rows[0].get(0).unwrap();
+    assert!(is_null);
+}
+
+// ---------------------------------------------------------------------------
+// Chrono types
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_timestamp() {
+    let client = connect().await;
+    let now = chrono::Utc::now().naive_utc();
+    let rows = client
+        .query("SELECT $1::timestamp AS ts", &[&now])
+        .await
+        .unwrap();
+    let ts: chrono::NaiveDateTime = rows[0].get(0).unwrap();
+    // Within 1 second (microsecond precision).
+    let diff = (ts - now).num_milliseconds().abs();
+    assert!(diff < 1000, "timestamp diff {diff}ms should be < 1s");
+}
+
+#[tokio::test]
+async fn test_timestamptz() {
+    let client = connect().await;
+    let now = chrono::Utc::now();
+    let rows = client
+        .query("SELECT $1::timestamptz AS ts", &[&now])
+        .await
+        .unwrap();
+    let ts: chrono::DateTime<chrono::Utc> = rows[0].get(0).unwrap();
+    let diff = (ts - now).num_milliseconds().abs();
+    assert!(diff < 1000, "timestamp diff {diff}ms should be < 1s");
+}
+
+#[tokio::test]
+async fn test_date() {
+    let client = connect().await;
+    let d = chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+    let rows = client.query("SELECT $1::date AS d", &[&d]).await.unwrap();
+    let result: chrono::NaiveDate = rows[0].get(0).unwrap();
+    assert_eq!(result, d);
+}
+
+#[tokio::test]
+async fn test_time() {
+    let client = connect().await;
+    let t = chrono::NaiveTime::from_hms_opt(14, 30, 0).unwrap();
+    let rows = client.query("SELECT $1::time AS t", &[&t]).await.unwrap();
+    let result: chrono::NaiveTime = rows[0].get(0).unwrap();
+    assert_eq!(result, t);
+}
+
+// ---------------------------------------------------------------------------
+// JSON types
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_jsonb() {
+    let client = connect().await;
+    let val = serde_json::json!({"key": "value", "num": 42});
+    let rows = client
+        .query("SELECT $1::jsonb AS j", &[&val])
+        .await
+        .unwrap();
+    let result: serde_json::Value = rows[0].get(0).unwrap();
+    assert_eq!(result["key"], "value");
+    assert_eq!(result["num"], 42);
+}
+
+#[tokio::test]
+async fn test_jsonb_array() {
+    let client = connect().await;
+    let val = serde_json::json!([1, 2, 3]);
+    let rows = client
+        .query("SELECT $1::jsonb AS j", &[&val])
+        .await
+        .unwrap();
+    let result: serde_json::Value = rows[0].get(0).unwrap();
+    assert_eq!(result, serde_json::json!([1, 2, 3]));
+}
+
+// ---------------------------------------------------------------------------
+// UUID
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_uuid() {
+    let client = connect().await;
+    let id = uuid::Uuid::new_v4();
+    let rows = client
+        .query("SELECT $1::uuid AS id", &[&id])
+        .await
+        .unwrap();
+    let result: uuid::Uuid = rows[0].get(0).unwrap();
+    assert_eq!(result, id);
+}
+
+// ---------------------------------------------------------------------------
+// Encode/Decode roundtrip unit tests for new types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_encode_decode_uuid() {
+    let id = uuid::Uuid::new_v4();
+    let mut buf = bytes::BytesMut::new();
+    id.encode(&mut buf);
+    assert_eq!(buf.len(), 16);
+    assert_eq!(uuid::Uuid::decode(&buf).unwrap(), id);
+}
+
+#[test]
+fn test_encode_decode_naive_date() {
+    let d = chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+    let mut buf = bytes::BytesMut::new();
+    d.encode(&mut buf);
+    assert_eq!(buf.len(), 4);
+    assert_eq!(chrono::NaiveDate::decode(&buf).unwrap(), d);
+}
+
+#[test]
+fn test_encode_decode_naive_time() {
+    let t = chrono::NaiveTime::from_hms_micro_opt(14, 30, 45, 123456).unwrap();
+    let mut buf = bytes::BytesMut::new();
+    t.encode(&mut buf);
+    assert_eq!(buf.len(), 8);
+    assert_eq!(chrono::NaiveTime::decode(&buf).unwrap(), t);
+}
+
+#[test]
+fn test_encode_decode_timestamp() {
+    let dt = chrono::NaiveDate::from_ymd_opt(2024, 6, 15)
+        .unwrap()
+        .and_hms_opt(14, 30, 0)
+        .unwrap();
+    let mut buf = bytes::BytesMut::new();
+    dt.encode(&mut buf);
+    assert_eq!(buf.len(), 8);
+    assert_eq!(chrono::NaiveDateTime::decode(&buf).unwrap(), dt);
+}
+
+#[test]
+fn test_encode_decode_jsonb() {
+    let val = serde_json::json!({"hello": "world"});
+    let mut buf = bytes::BytesMut::new();
+    val.encode(&mut buf);
+    // First byte is JSONB version (1).
+    assert_eq!(buf[0], 1);
+    let decoded: serde_json::Value = serde_json::Value::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
 }

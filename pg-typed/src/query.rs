@@ -9,7 +9,7 @@ use pg_wire::protocol::frontend;
 use pg_wire::protocol::types::{FormatCode, FrontendMsg};
 use pg_wire::{AsyncConn, PipelineResponse, ResponseCollector, WireConn};
 
-use crate::encode::Encode;
+use crate::encode::{Encode, SqlParam};
 use crate::error::TypedError;
 use crate::row::Row;
 
@@ -70,7 +70,7 @@ impl Client {
     pub async fn query(
         &self,
         sql: &str,
-        params: &[&(dyn Encode + Sync)],
+        params: &[&dyn SqlParam],
     ) -> Result<Vec<Row>, TypedError> {
         let (stmt_name, needs_parse) = self.conn.lookup_or_alloc(sql);
 
@@ -83,10 +83,8 @@ impl Client {
         let mut param_oids: Vec<u32> = Vec::with_capacity(params.len());
         let mut param_values: Vec<Option<BytesMut>> = Vec::with_capacity(params.len());
         for p in params {
-            param_oids.push(p.type_oid().as_u32());
-            let mut val_buf = BytesMut::new();
-            p.encode(&mut val_buf);
-            param_values.push(Some(val_buf));
+            param_oids.push(p.param_oid());
+            param_values.push(p.encode_param_value());
         }
 
         // Convert to the wire format expected by pg-wire.
@@ -176,7 +174,7 @@ impl Client {
     pub async fn query_one(
         &self,
         sql: &str,
-        params: &[&(dyn Encode + Sync)],
+        params: &[&dyn SqlParam],
     ) -> Result<Row, TypedError> {
         let rows = self.query(sql, params).await?;
         if rows.len() != 1 {
@@ -189,7 +187,7 @@ impl Client {
     pub async fn query_opt(
         &self,
         sql: &str,
-        params: &[&(dyn Encode + Sync)],
+        params: &[&dyn SqlParam],
     ) -> Result<Option<Row>, TypedError> {
         let rows = self.query(sql, params).await?;
         match rows.len() {
@@ -204,7 +202,7 @@ impl Client {
     pub async fn execute(
         &self,
         sql: &str,
-        params: &[&(dyn Encode + Sync)],
+        params: &[&dyn SqlParam],
     ) -> Result<u64, TypedError> {
         let (stmt_name, needs_parse) = self.conn.lookup_or_alloc(sql);
         let mut buf = BytesMut::with_capacity(512);
@@ -215,10 +213,8 @@ impl Client {
         let mut param_oids: Vec<u32> = Vec::with_capacity(params.len());
         let mut param_values: Vec<Option<BytesMut>> = Vec::with_capacity(params.len());
         for p in params {
-            param_oids.push(p.type_oid().as_u32());
-            let mut val_buf = BytesMut::new();
-            p.encode(&mut val_buf);
-            param_values.push(Some(val_buf));
+            param_oids.push(p.param_oid());
+            param_values.push(p.encode_param_value());
         }
         let param_refs: Vec<Option<&[u8]>> = param_values
             .iter()
@@ -298,7 +294,7 @@ impl<'a> Transaction<'a> {
     pub async fn query(
         &self,
         sql: &str,
-        params: &[&(dyn Encode + Sync)],
+        params: &[&dyn SqlParam],
     ) -> Result<Vec<Row>, TypedError> {
         self.client.query(sql, params).await
     }
@@ -307,7 +303,7 @@ impl<'a> Transaction<'a> {
     pub async fn execute(
         &self,
         sql: &str,
-        params: &[&(dyn Encode + Sync)],
+        params: &[&dyn SqlParam],
     ) -> Result<u64, TypedError> {
         self.client.execute(sql, params).await
     }

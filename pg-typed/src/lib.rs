@@ -19,7 +19,7 @@ mod row;
 mod types;
 
 pub use decode::Decode;
-pub use encode::Encode;
+pub use encode::{Encode, SqlParam};
 pub use error::TypedError;
 pub use oid::TypeOid;
 pub use query::{Client, Transaction};

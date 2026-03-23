@@ -113,22 +113,124 @@ impl Encode for Vec<u8> {
 // Option<T>: NULL encoding
 // ---------------------------------------------------------------------------
 
-/// Encode helper that wraps a value as a binary parameter.
-/// Returns the OID and the encoded bytes (or None for NULL).
-pub fn encode_value<T: Encode>(val: &T) -> (u32, BytesMut) {
-    let mut buf = BytesMut::new();
-    val.encode(&mut buf);
-    (val.type_oid().as_u32(), buf)
+// ---------------------------------------------------------------------------
+// Chrono types (behind "chrono" feature)
+// ---------------------------------------------------------------------------
+
+/// PG epoch: 2000-01-01 00:00:00 UTC.
+/// Offset from Unix epoch in microseconds.
+#[cfg(feature = "chrono")]
+const PG_EPOCH_OFFSET_US: i64 = 946_684_800_000_000;
+
+#[cfg(feature = "chrono")]
+impl Encode for chrono::NaiveDateTime {
+    fn type_oid(&self) -> TypeOid { TypeOid::Timestamp }
+    fn encode(&self, buf: &mut BytesMut) {
+        // PG stores timestamp as microseconds since 2000-01-01.
+        let us = self.and_utc().timestamp_micros() - PG_EPOCH_OFFSET_US;
+        buf.put_i64(us);
+    }
 }
 
-/// Encode a possibly-NULL value.
-pub fn encode_option<T: Encode>(val: &Option<T>) -> (u32, Option<BytesMut>) {
-    match val {
-        Some(v) => {
-            let mut buf = BytesMut::new();
-            v.encode(&mut buf);
-            (v.type_oid().as_u32(), Some(buf))
+#[cfg(feature = "chrono")]
+impl Encode for chrono::DateTime<chrono::Utc> {
+    fn type_oid(&self) -> TypeOid { TypeOid::Timestamptz }
+    fn encode(&self, buf: &mut BytesMut) {
+        let us = self.timestamp_micros() - PG_EPOCH_OFFSET_US;
+        buf.put_i64(us);
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl Encode for chrono::NaiveDate {
+    fn type_oid(&self) -> TypeOid { TypeOid::Date }
+    fn encode(&self, buf: &mut BytesMut) {
+        // PG stores date as days since 2000-01-01.
+        let pg_epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+        let days = (*self - pg_epoch).num_days() as i32;
+        buf.put_i32(days);
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl Encode for chrono::NaiveTime {
+    fn type_oid(&self) -> TypeOid { TypeOid::Time }
+    fn encode(&self, buf: &mut BytesMut) {
+        // PG stores time as microseconds since midnight.
+        let us = self
+            .signed_duration_since(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+            .num_microseconds()
+            .unwrap_or(0);
+        buf.put_i64(us);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON types (behind "json" feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "json")]
+impl Encode for serde_json::Value {
+    fn type_oid(&self) -> TypeOid { TypeOid::Jsonb }
+    fn encode(&self, buf: &mut BytesMut) {
+        // JSONB binary format: version byte (1) + JSON text.
+        buf.put_u8(1);
+        let json_text = serde_json::to_string(self).unwrap_or_default();
+        buf.put_slice(json_text.as_bytes());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UUID (behind "uuid" feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "uuid")]
+impl Encode for uuid::Uuid {
+    fn type_oid(&self) -> TypeOid { TypeOid::Uuid }
+    fn encode(&self, buf: &mut BytesMut) {
+        buf.put_slice(self.as_bytes());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SqlParam: trait for query parameters (supports NULL via Option<T>)
+// ---------------------------------------------------------------------------
+
+/// Trait for values that can be used as query parameters.
+/// Implemented for all `T: Encode` and for `Option<T>` (NULL).
+pub trait SqlParam: Sync {
+    /// The PostgreSQL type OID (0 = let server infer).
+    fn param_oid(&self) -> u32;
+    /// Encode the value into binary format. Returns None for NULL.
+    fn encode_param_value(&self) -> Option<BytesMut>;
+}
+
+impl<T: Encode + Sync> SqlParam for T {
+    fn param_oid(&self) -> u32 {
+        self.type_oid().as_u32()
+    }
+    fn encode_param_value(&self) -> Option<BytesMut> {
+        let mut buf = BytesMut::new();
+        self.encode(&mut buf);
+        Some(buf)
+    }
+}
+
+impl<T: Encode + Sync> SqlParam for Option<T> {
+    fn param_oid(&self) -> u32 {
+        match self {
+            Some(v) => v.type_oid().as_u32(),
+            None => 0,
         }
-        None => (0, None),
+    }
+    fn encode_param_value(&self) -> Option<BytesMut> {
+        match self {
+            Some(v) => {
+                let mut buf = BytesMut::new();
+                v.encode(&mut buf);
+                Some(buf)
+            }
+            None => None,
+        }
     }
 }
