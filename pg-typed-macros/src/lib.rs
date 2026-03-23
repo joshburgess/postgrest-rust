@@ -1,19 +1,26 @@
-//! Compile-time checked SQL query macros.
+//! Compile-time checked SQL query macros with offline cache support.
 //!
 //! Connects to PostgreSQL at compile time via pg-wire to validate SQL
-//! and generate typed result structs. Requires `DATABASE_URL` env var.
+//! and generate typed result structs.
+//!
+//! # Modes
+//!
+//! - **Online (default):** Connects to DB via `DATABASE_URL`, caches results to `.sqlx/`
+//! - **Offline:** Set `PG_TYPED_OFFLINE=true` to use cached metadata only (no DB needed)
+//! - **Prepare:** Run `pg-typed-cli prepare` to populate the cache from source files
 //!
 //! ```ignore
 //! let rows = pg_typed::query!("SELECT id, name FROM users WHERE id = $1", user_id)
 //!     .fetch_all(&client)
 //!     .await?;
-//! // rows[0].id: i32, rows[0].name: String — compile-time verified.
 //! ```
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, Expr, LitStr, Token};
+
+mod cache;
 
 /// Input to the query! macro: SQL literal + optional comma-separated params.
 struct QueryInput {
@@ -36,48 +43,76 @@ impl Parse for QueryInput {
     }
 }
 
-/// Column metadata from pg-wire Describe.
-struct ColumnInfo {
-    name: String,
-    type_oid: u32,
+/// Resolve query metadata: try cache first, then live DB, then update cache.
+fn resolve_metadata(
+    sql: &str,
+) -> Result<(Vec<u32>, Vec<cache::CachedColumn>), String> {
+    let sql_hash = hash_sql(sql);
+    let offline = std::env::var("PG_TYPED_OFFLINE")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    // 1. Try the cache first.
+    if let Some(cached) = cache::read_cache(sql_hash) {
+        return Ok((cached.param_oids, cached.columns));
+    }
+
+    // 2. If offline mode, fail — cache is required.
+    if offline {
+        return Err(format!(
+            "PG_TYPED_OFFLINE=true but no cached metadata for query (hash {sql_hash:x}). \
+             Run `pg-typed-cli prepare` to populate the cache."
+        ));
+    }
+
+    // 3. Connect to PG and describe.
+    let (param_oids, columns) = describe_live(sql)?;
+
+    // 4. Write to cache for future offline builds.
+    let entry = cache::CacheEntry {
+        sql: sql.to_string(),
+        hash: sql_hash,
+        param_oids: param_oids.clone(),
+        columns: columns.clone(),
+    };
+    if let Err(e) = cache::write_cache(&entry) {
+        // Cache write failure is non-fatal — just warn.
+        eprintln!("pg-typed: warning: failed to write cache: {e}");
+    }
+
+    Ok((param_oids, columns))
 }
 
-/// Connect to PG at compile time using pg-wire and describe the statement.
-fn describe_statement(sql: &str) -> Result<(Vec<u32>, Vec<ColumnInfo>), String> {
+/// Connect to PG via pg-wire and describe the statement.
+fn describe_live(sql: &str) -> Result<(Vec<u32>, Vec<cache::CachedColumn>), String> {
     let db_url = std::env::var("DATABASE_URL").map_err(|_| {
-        "DATABASE_URL environment variable not set. \
-         Set it to enable compile-time SQL checking, e.g.: \
-         DATABASE_URL=postgres://user:pass@localhost/db"
+        "DATABASE_URL not set and no cached metadata found. \
+         Set DATABASE_URL or run `pg-typed-cli prepare`."
             .to_string()
     })?;
 
-    // Parse the postgres:// URI.
-    let (user, password, host, port, database) = parse_pg_uri(&db_url)
-        .ok_or_else(|| format!("Invalid DATABASE_URL: {db_url}"))?;
+    let (user, password, host, port, database) =
+        parse_pg_uri(&db_url).ok_or_else(|| format!("Invalid DATABASE_URL: {db_url}"))?;
     let addr = format!("{host}:{port}");
 
-    // Use a single-threaded tokio runtime for the compile-time connection.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
 
     rt.block_on(async {
-        // Connect using pg-wire.
-        let mut conn =
-            pg_wire::WireConn::connect(&addr, &user, &password, &database)
-                .await
-                .map_err(|e| format!("Failed to connect to database: {e}"))?;
+        let mut conn = pg_wire::WireConn::connect(&addr, &user, &password, &database)
+            .await
+            .map_err(|e| format!("Failed to connect to database: {e}"))?;
 
-        // Describe the statement.
         let (param_oids, fields) = conn
             .describe_statement(sql)
             .await
             .map_err(|e| format!("SQL error: {e}"))?;
 
-        let columns: Vec<ColumnInfo> = fields
+        let columns: Vec<cache::CachedColumn> = fields
             .iter()
-            .map(|f| ColumnInfo {
+            .map(|f| cache::CachedColumn {
                 name: f.name.clone(),
                 type_oid: f.type_oid,
             })
@@ -104,25 +139,18 @@ fn oid_to_rust_type(oid: u32) -> proc_macro2::TokenStream {
         1114 => quote! { chrono::NaiveDateTime },
         1184 => quote! { chrono::DateTime<chrono::Utc> },
         2950 => quote! { uuid::Uuid },
-        1700 => quote! { String }, // numeric
-        _ => quote! { Vec<u8> },   // fallback: raw bytes
+        1700 => quote! { String },
+        _ => quote! { Vec<u8> },
     }
 }
 
 /// `query!("SQL", param1, param2, ...)` — compile-time checked SQL query.
-///
-/// Connects to PostgreSQL at compile time (via `DATABASE_URL` env var),
-/// validates the SQL, checks parameter count, and generates a typed result struct.
-///
-/// Returns a `CheckedQuery` that can be executed with `.fetch_all(&client)`,
-/// `.fetch_one(&client)`, or `.fetch_opt(&client)`.
 #[proc_macro]
 pub fn query(input: TokenStream) -> TokenStream {
     let QueryInput { sql, params } = parse_macro_input!(input as QueryInput);
     let sql_str = sql.value();
 
-    // Validate at compile time by connecting to PG.
-    let (param_oids, column_infos) = match describe_statement(&sql_str) {
+    let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
         Ok(result) => result,
         Err(e) => {
             return syn::Error::new_spanned(&sql, e)
@@ -131,7 +159,6 @@ pub fn query(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Validate parameter count.
     if params.len() != param_oids.len() {
         let msg = format!(
             "expected {} parameter(s), got {}",
@@ -143,7 +170,6 @@ pub fn query(input: TokenStream) -> TokenStream {
             .into();
     }
 
-    // Generate column field names and types.
     let field_names: Vec<_> = column_infos
         .iter()
         .map(|c| format_ident!("{}", sanitize_ident(&c.name)))
@@ -154,10 +180,8 @@ pub fn query(input: TokenStream) -> TokenStream {
         .collect();
     let field_indices: Vec<_> = (0..column_infos.len()).collect::<Vec<_>>();
 
-    // Generate a unique struct name.
     let struct_name = format_ident!("__QueryResult_{}", hash_sql(&sql_str));
 
-    // Build the param references.
     let param_refs: Vec<_> = params
         .iter()
         .map(|p| quote! { &#p as &dyn pg_typed::SqlParam })
@@ -189,7 +213,6 @@ pub fn query(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Sanitize a PG column name to a valid Rust identifier.
 fn sanitize_ident(name: &str) -> String {
     let s: String = name
         .chars()
@@ -204,8 +227,8 @@ fn sanitize_ident(name: &str) -> String {
     }
 }
 
-/// FNV-1a hash for unique struct names.
-fn hash_sql(sql: &str) -> u64 {
+/// FNV-1a hash.
+pub(crate) fn hash_sql(sql: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in sql.bytes() {
         h ^= b as u64;
@@ -214,9 +237,10 @@ fn hash_sql(sql: &str) -> u64 {
     h
 }
 
-/// Parse a postgres:// URI into (user, password, host, port, database).
 fn parse_pg_uri(uri: &str) -> Option<(String, String, String, u16, String)> {
-    let rest = uri.strip_prefix("postgres://").or_else(|| uri.strip_prefix("postgresql://"))?;
+    let rest = uri
+        .strip_prefix("postgres://")
+        .or_else(|| uri.strip_prefix("postgresql://"))?;
     let (auth, hostdb) = rest.split_once('@').unwrap_or(("postgres:postgres", rest));
     let (user, password) = auth.split_once(':').unwrap_or((auth, ""));
     let (hostport, database) = hostdb.split_once('/').unwrap_or((hostdb, "postgres"));
