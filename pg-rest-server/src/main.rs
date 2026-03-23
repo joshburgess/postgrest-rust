@@ -67,8 +67,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 7. Create pg-wire pools.
     // ConnPool: checkout/checkin pool for cold-path operations (EXPLAIN, health check).
-    let conn_pool = pg_wire::ConnPool::new(
-        pg_wire::ConnPoolConfig {
+    let conn_pool = pg_pool::ConnPool::<pg_pool::wire::WirePoolable>::new(
+        pg_pool::ConnPoolConfig {
             addr: wire_addr.clone(),
             user: user.clone(),
             password: password.clone(),
@@ -77,9 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_size: config.database.pool_size.max(2),
             ..Default::default()
         },
-        pg_wire::LifecycleHooks::default(),
+        pg_pool::LifecycleHooks::default(),
     )
-    .await?;
+    .await
+    .map_err(|e| format!("ConnPool init failed: {e}"))?;
     tracing::info!("ConnPool created (max_size={})", config.database.pool_size.max(2));
 
     // AsyncPool: multiplexed connections for the hot path (pipelined binary protocol).

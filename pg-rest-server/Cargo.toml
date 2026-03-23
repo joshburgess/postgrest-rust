@@ -8,6 +8,7 @@ edition = "2021"
 pg-schema-cache = { path = "../pg-schema-cache" }
 pg-query-engine = { path = "../pg-query-engine" }
 pg-wire = { path = "../pg-wire" }
+pg-pool = { path = "../pg-pool" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

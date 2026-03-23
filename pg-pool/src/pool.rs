@@ -1,11 +1,4 @@
-//! Production-grade connection pool for PostgreSQL wire connections.
-//!
-//! Inspired by hsqlx's pool design: waiter queue with dead-waiter skipping,
-//! jittered max-life to avoid thundering herd, health checks on checkout,
-//! lifecycle hooks, graceful drain, and metrics.
-//!
-//! This pool manages `WireConn` connections with checkout/checkin semantics.
-//! Each connection is verified before being handed to a caller.
+//! Generic connection pool implementation.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -14,8 +7,68 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
-use crate::connection::WireConn;
-use crate::error::PgWireError;
+// ---------------------------------------------------------------------------
+// Poolable trait
+// ---------------------------------------------------------------------------
+
+/// Trait for connection types that can be managed by the pool.
+pub trait Poolable: Send + 'static {
+    /// The error type for connection operations.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Create a new connection to the database.
+    fn connect(
+        addr: &str,
+        user: &str,
+        password: &str,
+        database: &str,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Error>> + Send
+    where
+        Self: Sized;
+
+    /// Check if the connection has unconsumed data (is in a corrupted state).
+    fn has_pending_data(&self) -> bool;
+}
+
+// ---------------------------------------------------------------------------
+// Pool error
+// ---------------------------------------------------------------------------
+
+/// Errors returned by pool operations.
+#[derive(Debug)]
+pub enum PoolError<E: std::error::Error> {
+    /// Connection creation failed.
+    Connect(E),
+    /// Pool is draining (shutting down).
+    Draining,
+    /// Checkout timed out waiting for an available connection.
+    Timeout,
+    /// Pool is closed.
+    Closed,
+    /// Pool is at maximum capacity.
+    AtCapacity,
+}
+
+impl<E: std::error::Error> std::fmt::Display for PoolError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connect(e) => write!(f, "connection error: {e}"),
+            Self::Draining => write!(f, "pool is draining"),
+            Self::Timeout => write!(f, "checkout timeout"),
+            Self::Closed => write!(f, "pool closed"),
+            Self::AtCapacity => write!(f, "pool at max capacity"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for PoolError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Connect(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -24,13 +77,13 @@ use crate::error::PgWireError;
 /// Connection pool configuration.
 #[derive(Clone, Debug)]
 pub struct ConnPoolConfig {
-    /// PostgreSQL address (host:port).
+    /// Address (host:port).
     pub addr: String,
-    /// PostgreSQL user.
+    /// User.
     pub user: String,
-    /// PostgreSQL password.
+    /// Password.
     pub password: String,
-    /// PostgreSQL database.
+    /// Database.
     pub database: String,
     /// Minimum idle connections to maintain.
     pub min_idle: usize,
@@ -42,9 +95,9 @@ pub struct ConnPoolConfig {
     pub max_lifetime_jitter: Duration,
     /// Timeout waiting for a connection from the pool.
     pub checkout_timeout: Duration,
-    /// How often to run the maintenance task (health checks, replenish min_idle).
+    /// How often to run the maintenance task.
     pub maintenance_interval: Duration,
-    /// Whether to verify connections on checkout (ping query).
+    /// Whether to verify connections on checkout.
     pub test_on_checkout: bool,
 }
 
@@ -57,8 +110,8 @@ impl Default for ConnPoolConfig {
             database: String::new(),
             min_idle: 1,
             max_size: 10,
-            max_lifetime: Duration::from_secs(30 * 60), // 30 minutes
-            max_lifetime_jitter: Duration::from_secs(60), // ± 60s
+            max_lifetime: Duration::from_secs(30 * 60),
+            max_lifetime_jitter: Duration::from_secs(60),
             checkout_timeout: Duration::from_secs(5),
             maintenance_interval: Duration::from_secs(10),
             test_on_checkout: true,
@@ -73,13 +126,9 @@ impl Default for ConnPoolConfig {
 /// Lifecycle hook callbacks. All hooks are optional.
 #[derive(Default)]
 pub struct LifecycleHooks {
-    /// Called after a new connection is created.
     pub on_create: Option<Box<dyn Fn() + Send + Sync>>,
-    /// Called when a connection is checked out from the pool.
     pub on_checkout: Option<Box<dyn Fn() + Send + Sync>>,
-    /// Called when a connection is returned to the pool.
     pub on_checkin: Option<Box<dyn Fn() + Send + Sync>>,
-    /// Called when a connection is destroyed (expired, unhealthy, or pool drain).
     pub on_destroy: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
@@ -90,21 +139,13 @@ pub struct LifecycleHooks {
 /// Snapshot of pool metrics.
 #[derive(Debug, Clone)]
 pub struct PoolMetrics {
-    /// Total connections currently managed (idle + in-use).
     pub total: usize,
-    /// Idle connections available for checkout.
     pub idle: usize,
-    /// Connections currently checked out.
     pub in_use: usize,
-    /// Number of waiters in the queue.
     pub waiters: usize,
-    /// Total checkouts since pool creation.
     pub total_checkouts: u64,
-    /// Total connections created since pool creation.
     pub total_created: u64,
-    /// Total connections destroyed since pool creation.
     pub total_destroyed: u64,
-    /// Total checkout timeouts since pool creation.
     pub total_timeouts: u64,
 }
 
@@ -112,55 +153,42 @@ pub struct PoolMetrics {
 // Internal types
 // ---------------------------------------------------------------------------
 
-/// An idle connection with its computed expiry.
-struct IdleConn {
-    conn: WireConn,
+struct IdleConn<C> {
+    conn: C,
     expires_at: Instant,
 }
 
-/// A waiter in the queue, waiting for a connection.
-struct Waiter {
-    tx: oneshot::Sender<WireConn>,
+struct Waiter<C> {
+    tx: oneshot::Sender<C>,
 }
 
 // ---------------------------------------------------------------------------
 // ConnPool
 // ---------------------------------------------------------------------------
 
-/// Production-grade connection pool with waiter queue and health management.
-pub struct ConnPool {
+/// Production-grade connection pool, generic over connection type `C`.
+pub struct ConnPool<C: Poolable> {
     config: ConnPoolConfig,
     hooks: LifecycleHooks,
-
-    /// Idle connections ready for checkout.
-    idle: Mutex<VecDeque<IdleConn>>,
-    /// Waiters blocked on checkout.
-    waiters: Mutex<VecDeque<Waiter>>,
-
-    /// Total connections currently alive (idle + checked-out).
+    idle: Mutex<VecDeque<IdleConn<C>>>,
+    waiters: Mutex<VecDeque<Waiter<C>>>,
     total_count: AtomicUsize,
-    /// Number of connections currently checked out.
     in_use_count: AtomicUsize,
-
-    // Metrics counters.
     total_checkouts: AtomicU64,
     total_created: AtomicU64,
     total_destroyed: AtomicU64,
     total_timeouts: AtomicU64,
-
-    /// Set to true to stop the pool from accepting new checkouts.
     draining: AtomicBool,
-    /// Notified when all connections are returned during drain.
     drain_complete: Notify,
-
-    /// Shutdown signal for background tasks.
     shutdown_tx: mpsc::Sender<()>,
 }
 
-impl ConnPool {
+impl<C: Poolable> ConnPool<C> {
     /// Create a new connection pool and spawn the maintenance task.
-    /// Pre-fills `min_idle` connections.
-    pub async fn new(config: ConnPoolConfig, hooks: LifecycleHooks) -> Result<Arc<Self>, PgWireError> {
+    pub async fn new(
+        config: ConnPoolConfig,
+        hooks: LifecycleHooks,
+    ) -> Result<Arc<Self>, PoolError<C::Error>> {
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         let pool = Arc::new(Self {
@@ -179,7 +207,6 @@ impl ConnPool {
             shutdown_tx,
         });
 
-        // Pre-fill min_idle connections.
         for _ in 0..config.min_idle {
             match pool.create_connection().await {
                 Ok(idle_conn) => {
@@ -192,7 +219,6 @@ impl ConnPool {
             }
         }
 
-        // Spawn maintenance task.
         {
             let pool_ref = Arc::clone(&pool);
             tokio::spawn(maintenance_task(pool_ref, shutdown_rx));
@@ -202,13 +228,11 @@ impl ConnPool {
     }
 
     /// Check out a connection from the pool.
-    /// Returns a `PoolGuard` that automatically returns the connection on drop.
-    pub async fn get(self: &Arc<Self>) -> Result<PoolGuard, PgWireError> {
+    pub async fn get(self: &Arc<Self>) -> Result<PoolGuard<C>, PoolError<C::Error>> {
         if self.draining.load(Ordering::Relaxed) {
-            return Err(PgWireError::Protocol("Pool is draining".into()));
+            return Err(PoolError::Draining);
         }
 
-        // Fast path: try to get an idle connection.
         if let Some(conn) = self.try_get_idle().await {
             self.in_use_count.fetch_add(1, Ordering::Relaxed);
             self.total_checkouts.fetch_add(1, Ordering::Relaxed);
@@ -221,7 +245,6 @@ impl ConnPool {
             });
         }
 
-        // Try to create a new connection if under max_size.
         if self.total_count.load(Ordering::Relaxed) < self.config.max_size {
             match self.create_and_track().await {
                 Ok(conn) => {
@@ -237,12 +260,10 @@ impl ConnPool {
                 }
                 Err(e) => {
                     tracing::warn!("Failed to create new connection: {e}");
-                    // Fall through to waiter queue.
                 }
             }
         }
 
-        // Slow path: join the waiter queue with timeout.
         let (tx, rx) = oneshot::channel();
         {
             let mut waiters = self.waiters.lock().await;
@@ -261,22 +282,17 @@ impl ConnPool {
                     pool: Arc::clone(self),
                 })
             }
-            Ok(Err(_)) => {
-                // Sender dropped — pool shutting down.
-                Err(PgWireError::Protocol("Pool closed".into()))
-            }
+            Ok(Err(_)) => Err(PoolError::Closed),
             Err(_) => {
                 self.total_timeouts.fetch_add(1, Ordering::Relaxed);
-                Err(PgWireError::Protocol("Checkout timeout".into()))
+                Err(PoolError::Timeout)
             }
         }
     }
 
-    /// Try to pop a valid idle connection (not expired, passes health check).
-    async fn try_get_idle(&self) -> Option<WireConn> {
+    async fn try_get_idle(&self) -> Option<C> {
         let mut idle = self.idle.lock().await;
         while let Some(entry) = idle.pop_front() {
-            // Check expiry.
             if Instant::now() >= entry.expires_at {
                 self.destroy_conn_stats();
                 if let Some(ref hook) = self.hooks.on_destroy {
@@ -284,8 +300,6 @@ impl ConnPool {
                 }
                 continue;
             }
-
-            // Health check: verify no pending data (connection isn't corrupted).
             if self.config.test_on_checkout && entry.conn.has_pending_data() {
                 self.destroy_conn_stats();
                 if let Some(ref hook) = self.hooks.on_destroy {
@@ -293,15 +307,13 @@ impl ConnPool {
                 }
                 continue;
             }
-
             return Some(entry.conn);
         }
         None
     }
 
-    /// Create a new WireConn and wrap it as IdleConn.
-    async fn create_connection(&self) -> Result<IdleConn, PgWireError> {
-        let conn = WireConn::connect(
+    async fn create_connection(&self) -> Result<IdleConn<C>, C::Error> {
+        let conn = C::connect(
             &self.config.addr,
             &self.config.user,
             &self.config.password,
@@ -321,36 +333,29 @@ impl ConnPool {
         })
     }
 
-    /// Create a new connection and increment total_count.
-    async fn create_and_track(&self) -> Result<WireConn, PgWireError> {
-        // Optimistically increment to reserve the slot.
+    async fn create_and_track(&self) -> Result<C, PoolError<C::Error>> {
         let prev = self.total_count.fetch_add(1, Ordering::Relaxed);
         if prev >= self.config.max_size {
-            // Race: someone else filled the last slot.
             self.total_count.fetch_sub(1, Ordering::Relaxed);
-            return Err(PgWireError::Protocol("Pool at max capacity".into()));
+            return Err(PoolError::AtCapacity);
         }
 
         match self.create_connection().await {
             Ok(idle_conn) => Ok(idle_conn.conn),
             Err(e) => {
                 self.total_count.fetch_sub(1, Ordering::Relaxed);
-                Err(e)
+                Err(PoolError::Connect(e))
             }
         }
     }
 
-    /// Return a connection to the pool (called by PoolGuard on drop).
-    /// Spawns an async task since Drop can't be async.
-    fn return_conn(pool: Arc<Self>, conn: WireConn) {
+    fn return_conn(pool: Arc<Self>, conn: C) {
         tokio::spawn(async move {
             pool.return_conn_async(conn).await;
         });
     }
 
-    /// Async return logic — hand off to waiter or push to idle.
-    async fn return_conn_async(&self, conn: WireConn) {
-        // Check if connection is still usable.
+    async fn return_conn_async(&self, conn: C) {
         if conn.has_pending_data() {
             self.in_use_count.fetch_sub(1, Ordering::Relaxed);
             self.destroy_conn_stats();
@@ -368,7 +373,6 @@ impl ConnPool {
         self.in_use_count.fetch_sub(1, Ordering::Relaxed);
 
         if self.draining.load(Ordering::Relaxed) {
-            // During drain, destroy instead of returning.
             self.destroy_conn_stats();
             if let Some(ref hook) = self.hooks.on_destroy {
                 hook();
@@ -377,12 +381,10 @@ impl ConnPool {
             return;
         }
 
-        // Try to hand off to a waiter first (skip dead waiters).
         let mut conn = conn;
         {
             let mut waiters = self.waiters.lock().await;
             while let Some(waiter) = waiters.pop_front() {
-                // Dead-waiter skipping: if the receiver was dropped, skip.
                 match waiter.tx.send(conn) {
                     Ok(()) => return,
                     Err(returned_conn) => {
@@ -393,7 +395,6 @@ impl ConnPool {
             }
         }
 
-        // No waiters — return to idle pool.
         let jitter = jittered_duration(self.config.max_lifetime, self.config.max_lifetime_jitter);
         let mut idle = self.idle.lock().await;
         idle.push_back(IdleConn {
@@ -410,7 +411,6 @@ impl ConnPool {
         }
     }
 
-    /// Decrement total_count for a destroyed connection.
     fn destroy_conn_stats(&self) {
         self.total_count.fetch_sub(1, Ordering::Relaxed);
         self.total_destroyed.fetch_add(1, Ordering::Relaxed);
@@ -424,7 +424,7 @@ impl ConnPool {
             total,
             idle: total.saturating_sub(in_use),
             in_use,
-            waiters: 0, // Approximation; exact count requires lock.
+            waiters: 0,
             total_checkouts: self.total_checkouts.load(Ordering::Relaxed),
             total_created: self.total_created.load(Ordering::Relaxed),
             total_destroyed: self.total_destroyed.load(Ordering::Relaxed),
@@ -432,12 +432,10 @@ impl ConnPool {
         }
     }
 
-    /// Initiate graceful drain. No new checkouts will be accepted.
-    /// Returns when all checked-out connections have been returned and destroyed.
+    /// Initiate graceful drain.
     pub async fn drain(&self) {
         self.draining.store(true, Ordering::Relaxed);
 
-        // Destroy all idle connections immediately.
         {
             let mut idle = self.idle.lock().await;
             let count = idle.len();
@@ -453,15 +451,11 @@ impl ConnPool {
             }
         }
 
-        // Cancel all waiters.
         {
             let mut waiters = self.waiters.lock().await;
-            waiters.clear(); // Dropping senders signals the receivers.
+            waiters.clear();
         }
 
-        // Wait for all in-use connections to be returned.
-        // Use the Notify enable pattern to avoid missed notifications:
-        // register interest BEFORE checking the condition.
         loop {
             let notified = self.drain_complete.notified();
             if self.total_count.load(Ordering::Relaxed) == 0 {
@@ -470,13 +464,11 @@ impl ConnPool {
             notified.await;
         }
 
-        // Signal shutdown to maintenance task.
         let _ = self.shutdown_tx.send(()).await;
-
         tracing::info!("Connection pool drained");
     }
 
-    /// Current pool status for logging/debugging.
+    /// Current pool status string.
     pub fn status(&self) -> String {
         let m = self.metrics();
         format!(
@@ -487,29 +479,26 @@ impl ConnPool {
 }
 
 // ---------------------------------------------------------------------------
-// PoolGuard — RAII connection handle
+// PoolGuard
 // ---------------------------------------------------------------------------
 
 /// A checked-out connection that returns itself to the pool on drop.
-pub struct PoolGuard {
-    conn: Option<WireConn>,
-    pool: Arc<ConnPool>,
+pub struct PoolGuard<C: Poolable> {
+    conn: Option<C>,
+    pool: Arc<ConnPool<C>>,
 }
 
-impl PoolGuard {
-    /// Access the underlying WireConn.
-    pub fn conn(&self) -> &WireConn {
+impl<C: Poolable> PoolGuard<C> {
+    pub fn conn(&self) -> &C {
         self.conn.as_ref().unwrap()
     }
 
-    /// Access the underlying WireConn mutably.
-    pub fn conn_mut(&mut self) -> &mut WireConn {
+    pub fn conn_mut(&mut self) -> &mut C {
         self.conn.as_mut().unwrap()
     }
 
-    /// Consume the guard and take ownership of the connection.
-    /// The connection will NOT be returned to the pool.
-    pub fn take(mut self) -> WireConn {
+    /// Take ownership of the connection, removing it from the pool.
+    pub fn take(mut self) -> C {
         let conn = self.conn.take().unwrap();
         self.pool.in_use_count.fetch_sub(1, Ordering::Relaxed);
         self.pool.total_count.fetch_sub(1, Ordering::Relaxed);
@@ -517,7 +506,7 @@ impl PoolGuard {
     }
 }
 
-impl Drop for PoolGuard {
+impl<C: Poolable> Drop for PoolGuard<C> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
             ConnPool::return_conn(Arc::clone(&self.pool), conn);
@@ -525,14 +514,14 @@ impl Drop for PoolGuard {
     }
 }
 
-impl std::ops::Deref for PoolGuard {
-    type Target = WireConn;
+impl<C: Poolable> std::ops::Deref for PoolGuard<C> {
+    type Target = C;
     fn deref(&self) -> &Self::Target {
         self.conn.as_ref().unwrap()
     }
 }
 
-impl std::ops::DerefMut for PoolGuard {
+impl<C: Poolable> std::ops::DerefMut for PoolGuard<C> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.conn.as_mut().unwrap()
     }
@@ -542,12 +531,9 @@ impl std::ops::DerefMut for PoolGuard {
 // Maintenance task
 // ---------------------------------------------------------------------------
 
-/// Background task that:
-/// 1. Evicts expired idle connections.
-/// 2. Replenishes to min_idle if below.
-async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<()>) {
+async fn maintenance_task<C: Poolable>(pool: Arc<ConnPool<C>>, mut shutdown_rx: mpsc::Receiver<()>) {
     let mut interval = tokio::time::interval(pool.config.maintenance_interval);
-    interval.tick().await; // Skip the first immediate tick.
+    interval.tick().await;
     loop {
         tokio::select! {
             _ = interval.tick() => {}
@@ -561,7 +547,6 @@ async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<(
             return;
         }
 
-        // 1. Evict expired idle connections.
         {
             let mut idle = pool.idle.lock().await;
             let now = Instant::now();
@@ -575,7 +560,6 @@ async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<(
             }
         }
 
-        // 2. Replenish to min_idle.
         let total = pool.total_count.load(Ordering::Relaxed);
         let in_use = pool.in_use_count.load(Ordering::Relaxed);
         let current_idle = total.saturating_sub(in_use);
@@ -584,7 +568,6 @@ async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<(
             let to_create = (pool.config.min_idle - current_idle)
                 .min(pool.config.max_size - total);
             for _ in 0..to_create {
-                // Use create_and_track to atomically check max_size before creating.
                 match pool.create_and_track().await {
                     Ok(conn) => {
                         let jitter = jittered_duration(
@@ -596,10 +579,6 @@ async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<(
                             conn,
                             expires_at: Instant::now() + jitter,
                         });
-                        // create_and_track already incremented total_count,
-                        // but we need to move from "in-use" to "idle" accounting.
-                        // create_and_track increments total_count but NOT in_use_count,
-                        // so the connection is effectively idle once pushed.
                     }
                     Err(_) => break,
                 }
@@ -612,19 +591,16 @@ async fn maintenance_task(pool: Arc<ConnPool>, mut shutdown_rx: mpsc::Receiver<(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Apply jitter to a base duration.
 fn jittered_duration(base: Duration, jitter: Duration) -> Duration {
     if jitter.is_zero() {
         return base;
     }
     let jitter_ms = jitter.as_millis() as u64;
-    // Simple pseudo-random jitter using thread-local fast RNG.
     let offset = fastrand_u64() % (jitter_ms * 2 + 1);
     let jittered = base.as_millis() as i128 + offset as i128 - jitter_ms as i128;
     Duration::from_millis(jittered.max(1) as u64)
 }
 
-/// Fast pseudo-random u64 using a simple xorshift on thread-local state.
 fn fastrand_u64() -> u64 {
     use std::cell::Cell;
     thread_local! {

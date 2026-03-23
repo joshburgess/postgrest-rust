@@ -138,6 +138,12 @@ impl From<pg_wire::PgWireError> for ApiError {
     }
 }
 
+impl From<pg_pool::PoolError<pg_wire::PgWireError>> for ApiError {
+    fn from(e: pg_pool::PoolError<pg_wire::PgWireError>) -> Self {
+        Self::Pool(e.to_string())
+    }
+}
+
 impl From<pg_schema_cache::SchemaCacheError> for ApiError {
     fn from(e: pg_schema_cache::SchemaCacheError) -> Self {
         Self::BadRequest(format!("schema cache error: {e}"))

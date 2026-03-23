@@ -1,3 +1,3 @@
 [workspace]
-members = ["pg-schema-cache", "pg-query-engine", "pg-rest-server", "pg-wire", "test/compat"]
+members = ["pg-schema-cache", "pg-query-engine", "pg-rest-server", "pg-wire", "pg-pool", "test/compat"]
 resolver = "2"

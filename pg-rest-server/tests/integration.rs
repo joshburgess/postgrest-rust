@@ -58,8 +58,8 @@ async fn setup() -> axum::Router {
         jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
     jwt_validation.required_spec_claims = Default::default();
 
-    let conn_pool = pg_wire::ConnPool::new(
-        pg_wire::ConnPoolConfig {
+    let conn_pool = pg_pool::ConnPool::<pg_pool::wire::WirePoolable>::new(
+        pg_pool::ConnPoolConfig {
             addr: "127.0.0.1:54322".to_string(),
             user: "authenticator".to_string(),
             password: "authenticator".to_string(),
@@ -68,7 +68,7 @@ async fn setup() -> axum::Router {
             max_size: 5,
             ..Default::default()
         },
-        pg_wire::LifecycleHooks::default(),
+        pg_pool::LifecycleHooks::default(),
     ).await.unwrap();
 
     let async_pool = pg_wire::AsyncPool::connect(

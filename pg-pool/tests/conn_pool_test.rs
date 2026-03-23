@@ -5,7 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use pg_wire::{ConnPool, ConnPoolConfig, LifecycleHooks, PgWireError, WireConn};
+use pg_pool::{ConnPool, ConnPoolConfig, LifecycleHooks, PoolGuard};
+use pg_pool::wire::WirePoolable;
+use pg_wire::{PgWireError, WireConn};
+
+type Pool = ConnPool<WirePoolable>;
 
 const ADDR: &str = "127.0.0.1:54322";
 const USER: &str = "postgres";
@@ -34,7 +38,7 @@ fn test_config() -> ConnPoolConfig {
 
 #[tokio::test]
 async fn test_pool_create_with_min_idle() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -49,7 +53,7 @@ async fn test_pool_create_with_min_idle() {
 async fn test_pool_create_min_idle_zero() {
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -62,7 +66,7 @@ async fn test_pool_create_min_idle_zero() {
 async fn test_pool_create_min_idle_multiple() {
     let mut config = test_config();
     config.min_idle = 3;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -78,7 +82,7 @@ async fn test_pool_create_min_idle_multiple() {
 
 #[tokio::test]
 async fn test_checkout_basic() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -103,7 +107,7 @@ async fn test_checkout_basic() {
 
 #[tokio::test]
 async fn test_checkout_reuses_idle_connection() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -126,7 +130,7 @@ async fn test_checkout_reuses_idle_connection() {
 async fn test_checkout_creates_new_when_no_idle() {
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -144,7 +148,7 @@ async fn test_multiple_checkouts_grow_pool() {
     let mut config = test_config();
     config.min_idle = 0;
     config.max_size = 3;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -169,7 +173,7 @@ async fn test_multiple_checkouts_grow_pool() {
 
 #[tokio::test]
 async fn test_checkout_connection_functional_select() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -181,7 +185,7 @@ async fn test_checkout_connection_functional_select() {
 
 #[tokio::test]
 async fn test_checkout_connection_functional_after_return_and_reuse() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -204,13 +208,13 @@ async fn test_checkout_connection_functional_after_return_and_reuse() {
 
 #[tokio::test]
 async fn test_checkout_connection_functional_with_pipeline() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
     let g = pool.get().await.unwrap();
-    let conn = g.take();
-    let mut pipeline = pg_wire::PgPipeline::new(conn);
+    let wire_poolable = g.take();
+    let mut pipeline = pg_wire::PgPipeline::new(wire_poolable.0);
     // Use the taken connection via PgPipeline.
     let rows = pipeline
         .query("SELECT $1::text AS val", &[Some(b"test" as &[u8])], &[0])
@@ -231,7 +235,7 @@ async fn test_max_size_blocks_when_full() {
     config.min_idle = 0;
     config.max_size = 2;
     config.checkout_timeout = Duration::from_millis(200);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -261,7 +265,7 @@ async fn test_max_size_unblocks_on_checkin() {
     config.min_idle = 0;
     config.max_size = 1;
     config.checkout_timeout = Duration::from_secs(2);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -296,7 +300,7 @@ async fn test_waiter_queue_fifo_order() {
     config.min_idle = 0;
     config.max_size = 1;
     config.checkout_timeout = Duration::from_secs(3);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -343,7 +347,7 @@ async fn test_dead_waiter_skipping() {
     config.min_idle = 0;
     config.max_size = 1;
     config.checkout_timeout = Duration::from_millis(100);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -385,7 +389,7 @@ async fn test_checkout_timeout_fires() {
     config.min_idle = 0;
     config.max_size = 1;
     config.checkout_timeout = Duration::from_millis(100);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -407,7 +411,7 @@ async fn test_checkout_timeout_counter_accumulates() {
     config.min_idle = 0;
     config.max_size = 1;
     config.checkout_timeout = Duration::from_millis(50);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -437,7 +441,7 @@ async fn test_lifecycle_hooks_on_create() {
 
     let mut config = test_config();
     config.min_idle = 2;
-    let pool = ConnPool::new(config, hooks).await.unwrap();
+    let pool = Pool::new(config, hooks).await.unwrap();
     assert_eq!(counter.load(Ordering::Relaxed), 2, "on_create fired for min_idle");
 
     // Checkout that creates a new conn.
@@ -459,7 +463,7 @@ async fn test_lifecycle_hooks_on_checkout() {
         ..Default::default()
     };
 
-    let pool = ConnPool::new(test_config(), hooks).await.unwrap();
+    let pool = Pool::new(test_config(), hooks).await.unwrap();
 
     let g1 = pool.get().await.unwrap();
     assert_eq!(counter.load(Ordering::Relaxed), 1);
@@ -481,7 +485,7 @@ async fn test_lifecycle_hooks_on_checkin() {
         ..Default::default()
     };
 
-    let pool = ConnPool::new(test_config(), hooks).await.unwrap();
+    let pool = Pool::new(test_config(), hooks).await.unwrap();
 
     let g1 = pool.get().await.unwrap();
     assert_eq!(counter.load(Ordering::Relaxed), 0, "no checkin yet");
@@ -501,7 +505,7 @@ async fn test_lifecycle_hooks_on_destroy() {
         ..Default::default()
     };
 
-    let pool = ConnPool::new(test_config(), hooks).await.unwrap();
+    let pool = Pool::new(test_config(), hooks).await.unwrap();
     assert_eq!(counter.load(Ordering::Relaxed), 0);
 
     // Drain destroys idle connections.
@@ -527,7 +531,7 @@ async fn test_all_hooks_fire_in_sequence() {
 
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, hooks).await.unwrap();
+    let pool = Pool::new(config, hooks).await.unwrap();
 
     let g = pool.get().await.unwrap();
     drop(g);
@@ -551,7 +555,7 @@ async fn test_metrics_accuracy() {
     let mut config = test_config();
     config.min_idle = 2;
     config.max_size = 5;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -587,7 +591,7 @@ async fn test_metrics_total_created_and_destroyed() {
     let mut config = test_config();
     config.min_idle = 0;
     config.max_size = 3;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -612,7 +616,7 @@ async fn test_metrics_total_created_and_destroyed() {
 
 #[tokio::test]
 async fn test_status_string() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -630,7 +634,7 @@ async fn test_status_string() {
 async fn test_drain_destroys_idle_connections() {
     let mut config = test_config();
     config.min_idle = 3;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -646,7 +650,7 @@ async fn test_drain_destroys_idle_connections() {
 
 #[tokio::test]
 async fn test_drain_rejects_new_checkouts() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -667,7 +671,7 @@ async fn test_drain_rejects_new_checkouts() {
 async fn test_drain_waits_for_in_use_connections() {
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -699,7 +703,7 @@ async fn test_drain_waits_for_in_use_connections() {
 async fn test_drain_destroys_returned_connections() {
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -737,7 +741,7 @@ async fn test_drain_destroys_returned_connections() {
 async fn test_pool_guard_take() {
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -745,7 +749,7 @@ async fn test_pool_guard_take() {
     assert_eq!(pool.metrics().total, 1);
     assert_eq!(pool.metrics().in_use, 1);
 
-    let _conn: WireConn = g.take();
+    let _conn: WirePoolable = g.take();
 
     // Connection removed from pool tracking.
     assert_eq!(pool.metrics().total, 0);
@@ -754,7 +758,7 @@ async fn test_pool_guard_take() {
 
 #[tokio::test]
 async fn test_pool_guard_deref() {
-    let pool = ConnPool::new(test_config(), LifecycleHooks::default())
+    let pool = Pool::new(test_config(), LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -773,7 +777,7 @@ async fn test_concurrent_checkout_checkin() {
     config.min_idle = 0;
     config.max_size = 5;
     config.checkout_timeout = Duration::from_secs(5);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -806,7 +810,7 @@ async fn test_high_concurrency_no_deadlock() {
     config.min_idle = 2;
     config.max_size = 3;
     config.checkout_timeout = Duration::from_secs(10);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -841,7 +845,7 @@ async fn test_expired_connections_evicted_on_checkout() {
     config.max_size = 5;
     config.max_lifetime = Duration::from_millis(100);
     config.max_lifetime_jitter = Duration::ZERO;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -874,7 +878,7 @@ async fn test_connection_invalid_after_pg_terminate() {
     // a fresh connection can be obtained.
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -921,7 +925,7 @@ async fn test_pool_with_invalid_address() {
     config.addr = "127.0.0.1:1".to_string(); // invalid port
     config.min_idle = 0;
     config.checkout_timeout = Duration::from_millis(500);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -935,7 +939,7 @@ async fn test_pool_create_with_invalid_address_and_min_idle() {
     config.addr = "127.0.0.1:1".to_string();
     config.min_idle = 3;
     // Should not panic — just warns and creates pool with 0 idle.
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
     assert_eq!(pool.metrics().total, 0, "failed pre-fill is not fatal");
@@ -952,7 +956,7 @@ async fn test_drain_completes_with_rapid_return() {
     let mut config = test_config();
     config.min_idle = 0;
     config.max_size = 5;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -991,7 +995,7 @@ async fn test_drain_with_no_connections() {
     // Drain on empty pool (total_count already 0) should return immediately.
     let mut config = test_config();
     config.min_idle = 0;
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -1013,7 +1017,7 @@ async fn test_maintenance_does_not_exceed_max_size() {
     config.min_idle = 3;
     config.max_size = 3;
     config.maintenance_interval = Duration::from_millis(100); // fast maintenance
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -1040,7 +1044,7 @@ async fn test_concurrent_get_does_not_exceed_max_size() {
     config.min_idle = 0;
     config.max_size = 3;
     config.checkout_timeout = Duration::from_secs(5);
-    let pool = ConnPool::new(config, LifecycleHooks::default())
+    let pool = Pool::new(config, LifecycleHooks::default())
         .await
         .unwrap();
 
@@ -1111,13 +1115,13 @@ where
 
 /// Send a simple query via WireConn's raw protocol and collect rows.
 async fn send_query(
-    guard: &mut pg_wire::PoolGuard,
+    guard: &mut PoolGuard<WirePoolable>,
     sql: &str,
 ) -> (Vec<Vec<Option<Vec<u8>>>>, String) {
     use bytes::BytesMut;
     use pg_wire::protocol::types::FrontendMsg;
 
-    let conn = guard.conn_mut();
+    let conn: &mut WireConn = &mut guard.conn_mut().0;
     let mut buf = BytesMut::new();
     pg_wire::protocol::frontend::encode_message(
         &FrontendMsg::Query(sql.as_bytes()),
@@ -1144,13 +1148,13 @@ async fn send_query_raw(
 }
 
 async fn send_query_try(
-    guard: &mut pg_wire::PoolGuard,
+    guard: &mut PoolGuard<WirePoolable>,
     sql: &str,
 ) -> Result<(Vec<Vec<Option<Vec<u8>>>>, String), PgWireError> {
     use bytes::BytesMut;
     use pg_wire::protocol::types::FrontendMsg;
 
-    let conn = guard.conn_mut();
+    let conn: &mut WireConn = &mut guard.conn_mut().0;
     let mut buf = BytesMut::new();
     pg_wire::protocol::frontend::encode_message(
         &FrontendMsg::Query(sql.as_bytes()),

@@ -7,7 +7,7 @@ use pg_schema_cache::SchemaCache;
 
 pub struct AppState {
     /// Connection pool for cold-path operations (EXPLAIN, health check).
-    pub conn_pool: Arc<pg_wire::ConnPool>,
+    pub conn_pool: Arc<pg_pool::ConnPool<pg_pool::wire::WirePoolable>>,
     /// Pool of async connections for parallel PG backend utilization (hot path).
     pub async_pool: Arc<pg_wire::AsyncPool>,
     pub schema_cache: watch::Receiver<Arc<SchemaCache>>,
