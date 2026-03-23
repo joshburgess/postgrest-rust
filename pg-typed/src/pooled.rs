@@ -65,6 +65,18 @@ impl TypedPool {
         self.pool.metrics()
     }
 
+    /// Acquire a raw pooled connection (returned to pool on drop).
+    /// Use this when you need direct WireConn access without AsyncConn overhead.
+    pub async fn acquire(&self) -> Result<PooledConnection, TypedError> {
+        let guard = self.pool.get().await.map_err(|e| {
+            TypedError::Decode {
+                column: 0,
+                message: format!("pool error: {e}"),
+            }
+        })?;
+        Ok(PooledConnection { guard: Some(guard) })
+    }
+
     /// Drain the pool.
     pub async fn drain(&self) {
         self.pool.drain().await;
@@ -83,5 +95,32 @@ impl std::ops::Deref for PooledTypedClient {
     type Target = Client;
     fn deref(&self) -> &Self::Target {
         &self.client
+    }
+}
+
+/// A raw connection borrowed from the pool.
+/// Unlike `PooledTypedClient`, this uses `PgPipeline` directly
+/// and returns the connection to the pool when dropped.
+pub struct PooledConnection {
+    guard: Option<pg_pool::PoolGuard<WirePoolable>>,
+}
+
+impl PooledConnection {
+    /// Access the raw WireConn for direct protocol operations.
+    pub fn conn(&mut self) -> &mut pg_wire::WireConn {
+        &mut self.guard.as_mut().unwrap().conn_mut().0
+    }
+
+    /// Convert to a PgPipeline for pipelined operations.
+    /// Consumes the guard — the connection will NOT be returned to the pool.
+    pub fn into_pipeline(mut self) -> pg_wire::PgPipeline {
+        let wire = self.guard.take().unwrap().take().0;
+        pg_wire::PgPipeline::new(wire)
+    }
+}
+
+impl Drop for PooledConnection {
+    fn drop(&mut self) {
+        // guard is dropped here, returning the connection to the pool.
     }
 }

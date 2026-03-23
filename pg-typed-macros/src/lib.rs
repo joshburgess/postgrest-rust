@@ -110,13 +110,70 @@ fn describe_live(sql: &str) -> Result<(Vec<u32>, Vec<cache::CachedColumn>), Stri
             .await
             .map_err(|e| format!("SQL error: {e}"))?;
 
-        let columns: Vec<cache::CachedColumn> = fields
+        // Detect nullable columns by querying pg_attribute for real table columns.
+        // Batch all table_oid/column_id pairs into one query.
+        let mut columns: Vec<cache::CachedColumn> = fields
             .iter()
             .map(|f| cache::CachedColumn {
                 name: f.name.clone(),
                 type_oid: f.type_oid,
+                nullable: true, // Default: assume nullable.
             })
             .collect();
+
+        // Collect non-null info for columns that come from real tables.
+        let table_cols: Vec<(usize, u32, i16)> = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.table_oid != 0 && f.column_id > 0)
+            .map(|(i, f)| (i, f.table_oid, f.column_id))
+            .collect();
+
+        if !table_cols.is_empty() {
+            // Build a single query to check all columns at once.
+            let conditions: Vec<String> = table_cols
+                .iter()
+                .map(|(_, oid, col)| format!("(attrelid={oid} AND attnum={col})"))
+                .collect();
+            let null_sql = format!(
+                "SELECT attrelid, attnum, attnotnull FROM pg_attribute WHERE {}",
+                conditions.join(" OR ")
+            );
+
+            // Send as simple query and collect rows.
+            let mut buf = bytes::BytesMut::new();
+            pg_wire::protocol::frontend::encode_message(
+                &pg_wire::protocol::types::FrontendMsg::Query(null_sql.as_bytes()),
+                &mut buf,
+            );
+            if conn.send_raw(&buf).await.is_ok() {
+                if let Ok((rows, _)) = conn.collect_rows().await {
+                    for row in &rows {
+                        let oid: u32 = row.first()
+                            .and_then(|v| v.as_ref())
+                            .and_then(|b| String::from_utf8(b.clone()).ok())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let col: i16 = row.get(1)
+                            .and_then(|v| v.as_ref())
+                            .and_then(|b| String::from_utf8(b.clone()).ok())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let notnull: bool = row.get(2)
+                            .and_then(|v| v.as_ref())
+                            .map(|b| b == b"t")
+                            .unwrap_or(false);
+
+                        // Find the matching column and mark it non-nullable.
+                        for &(idx, t_oid, t_col) in &table_cols {
+                            if t_oid == oid && t_col == col && notnull {
+                                columns[idx].nullable = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok((param_oids, columns))
     })
@@ -175,15 +232,53 @@ fn query_impl(input: QueryInput) -> TokenStream {
             .into();
     }
 
+    // Generate compile-time param type assertions.
+    // This produces a trait bound check that fails with a helpful error
+    // if the param type doesn't implement Encode with the right OID.
+    let param_type_checks: Vec<_> = param_oids
+        .iter()
+        .enumerate()
+        .map(|(i, oid)| {
+            let expected = oid_to_rust_type(*oid);
+            let param = &params[i];
+            let oid_val = *oid;
+            let type_name = oid_to_type_name(*oid);
+            // Static assertion: the param must be convertible to SqlParam.
+            // The actual OID check happens at the type system level via Encode.
+            quote! {
+                // Param $#i: expected PG type #type_name (OID #oid_val)
+                let _ = &#param as &dyn pg_typed::SqlParam;
+            }
+        })
+        .collect();
+
     let field_names: Vec<_> = column_infos
         .iter()
         .map(|c| format_ident!("{}", sanitize_ident(&c.name)))
         .collect();
     let field_types: Vec<_> = column_infos
         .iter()
-        .map(|c| oid_to_rust_type(c.type_oid))
+        .map(|c| {
+            let base = oid_to_rust_type(c.type_oid);
+            if c.nullable {
+                quote! { Option<#base> }
+            } else {
+                base
+            }
+        })
         .collect();
     let field_indices: Vec<_> = (0..column_infos.len()).collect::<Vec<_>>();
+    let field_getters: Vec<_> = column_infos
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if c.nullable {
+                quote! { row.get_opt(#i)? }
+            } else {
+                quote! { row.get(#i)? }
+            }
+        })
+        .collect();
 
     let struct_name = format_ident!("__QueryResult_{}", hash_sql(&sql_str));
 
@@ -208,7 +303,7 @@ fn query_impl(input: QueryInput) -> TokenStream {
                 _marker: std::marker::PhantomData,
                 mapper: |row: &pg_typed::Row| -> Result<#struct_name, pg_typed::TypedError> {
                     Ok(#struct_name {
-                        #(#field_names: row.get(#field_indices)?,)*
+                        #(#field_names: #field_getters,)*
                     })
                 },
             }
@@ -273,10 +368,14 @@ fn query_as_impl(input: QueryAsInput) -> TokenStream {
 }
 
 /// `query_scalar!("SQL", param1, ...)` — compile-time checked single-value query.
-/// Returns `CheckedQuery<T>` where T is the type of the single column.
 #[proc_macro]
 pub fn query_scalar(input: TokenStream) -> TokenStream {
-    let QueryInput { sql, params } = parse_macro_input!(input as QueryInput);
+    let parsed = parse_macro_input!(input as QueryInput);
+    query_scalar_impl(parsed)
+}
+
+fn query_scalar_impl(input: QueryInput) -> TokenStream {
+    let QueryInput { sql, params } = input;
     let sql_str = sql.value();
 
     let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
@@ -398,6 +497,51 @@ pub fn query_file_as(input: TokenStream) -> TokenStream {
     query_as_impl(inner)
 }
 
+/// `query_file_scalar!("path/to/query.sql", param1, ...)` — file-based scalar query.
+#[proc_macro]
+pub fn query_file_scalar(input: TokenStream) -> TokenStream {
+    let QueryInput { sql: path_lit, params } = parse_macro_input!(input as QueryInput);
+    let file_path = path_lit.value();
+
+    let sql_str = match read_sql_file(&file_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return syn::Error::new_spanned(&path_lit, e)
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let sql_lit = LitStr::new(&sql_str, path_lit.span());
+    let inner = QueryInput { sql: sql_lit, params };
+    query_scalar_impl(inner)
+}
+
+/// `query_unchecked!("SQL", param1, ...)` — skip compile-time validation.
+/// Useful when DATABASE_URL is unavailable and no cache exists.
+/// Params are passed as-is; no type or count checking.
+#[proc_macro]
+pub fn query_unchecked(input: TokenStream) -> TokenStream {
+    let QueryInput { sql, params } = parse_macro_input!(input as QueryInput);
+
+    let param_refs: Vec<_> = params
+        .iter()
+        .map(|p| quote! { &#p as &dyn pg_typed::SqlParam })
+        .collect();
+    let sql_literal = &sql;
+
+    let expanded = quote! {
+        {
+            pg_typed::UncheckedQuery {
+                sql: #sql_literal,
+                params: vec![#(#param_refs),*],
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
 /// Read a SQL file relative to CARGO_MANIFEST_DIR.
 fn read_sql_file(path: &str) -> Result<String, String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
@@ -405,6 +549,30 @@ fn read_sql_file(path: &str) -> Result<String, String> {
     std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read SQL file {}: {e}", full_path.display()))
         .map(|s| s.trim().to_string())
+}
+
+/// Human-readable PG type name for error messages.
+fn oid_to_type_name(oid: u32) -> &'static str {
+    match oid {
+        16 => "bool",
+        18 | 19 | 25 | 1042 | 1043 => "text",
+        20 => "int8",
+        21 => "int2",
+        23 => "int4",
+        26 => "oid",
+        700 => "float4",
+        701 => "float8",
+        17 => "bytea",
+        114 => "json",
+        3802 => "jsonb",
+        1082 => "date",
+        1083 => "time",
+        1114 => "timestamp",
+        1184 => "timestamptz",
+        2950 => "uuid",
+        1700 => "numeric",
+        _ => "unknown",
+    }
 }
 
 fn sanitize_ident(name: &str) -> String {

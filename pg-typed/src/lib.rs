@@ -14,6 +14,8 @@ mod checked;
 mod decode;
 mod encode;
 mod error;
+mod listener;
+pub mod migrate;
 pub mod newtypes;
 mod oid;
 mod pooled;
@@ -21,7 +23,7 @@ mod query;
 mod row;
 mod types;
 
-pub use checked::CheckedQuery;
+pub use checked::{CheckedQuery, UncheckedQuery};
 pub use decode::Decode;
 pub use encode::{Encode, SqlParam};
 pub use error::TypedError;
@@ -40,6 +42,11 @@ pub use pg_typed_macros::query_scalar;
 pub use pg_typed_macros::query_file;
 /// Like query_as! but reads SQL from a file.
 pub use pg_typed_macros::query_file_as;
+/// Like query_scalar! but reads SQL from a file.
+pub use pg_typed_macros::query_file_scalar;
+/// Skip compile-time checking (no DATABASE_URL or cache needed).
+pub use pg_typed_macros::query_unchecked;
 pub use types::TypeInfo;
 pub use newtypes::{PgNumeric, PgInet};
-pub use pooled::{TypedPool, PooledTypedClient};
+pub use listener::{PgListener, Notification};
+pub use pooled::{TypedPool, PooledTypedClient, PooledConnection};

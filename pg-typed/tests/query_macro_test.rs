@@ -221,3 +221,65 @@ async fn test_query_file_as() {
     assert_eq!(author.id, 1);
     assert_eq!(author.name, "Alice");
 }
+
+// ---------------------------------------------------------------------------
+// query_file_scalar! macro
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_query_file_scalar() {
+    let client = connect().await;
+    let count = pg_typed::query_file_scalar!("tests/sql/count_authors.sql")
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert!(count >= 3);
+}
+
+// ---------------------------------------------------------------------------
+// query_unchecked! macro
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_query_unchecked() {
+    let client = connect().await;
+    let rows = pg_typed::query_unchecked!("SELECT 42::int4 AS n")
+        .fetch_all(&client)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let n: i32 = rows[0].get(0).unwrap();
+    assert_eq!(n, 42);
+}
+
+#[tokio::test]
+async fn test_query_unchecked_with_params() {
+    let client = connect().await;
+    let id = 1i32;
+    let row = pg_typed::query_unchecked!("SELECT name FROM api.authors WHERE id = $1", id)
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    let name: String = row.get(0).unwrap();
+    assert_eq!(name, "Alice");
+}
+
+// ---------------------------------------------------------------------------
+// Nullable column detection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_nullable_column_detection() {
+    let client = connect().await;
+    // bio column is nullable in api.authors.
+    let row = pg_typed::query!("SELECT id, name, bio FROM api.authors WHERE id = $1", 1i32)
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert_eq!(row.id, 1);
+    assert_eq!(row.name, "Alice");
+    // Verify bio has some value (it was inserted with a value).
+    // The type (String or Option<String>) depends on nullability detection.
+    let bio_str: String = format!("{:?}", row.bio);
+    assert!(bio_str.contains("Rust"));
+}

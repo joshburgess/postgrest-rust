@@ -1388,6 +1388,7 @@ dependencies = [
 name = "pg-typed-macros"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "pg-wire",
  "proc-macro2",
  "quote",

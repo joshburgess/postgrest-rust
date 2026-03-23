@@ -88,6 +88,25 @@ async fn test_typed_pool_from_row() {
 }
 
 #[tokio::test]
+async fn test_typed_pool_acquire() {
+    let pool = TypedPool::connect(ADDR, USER, PASS, DB, 3).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    // Use the raw WireConn for a simple query.
+    let wire = conn.conn();
+    use bytes::BytesMut;
+    let mut buf = BytesMut::new();
+    pg_wire::protocol::frontend::encode_message(
+        &pg_wire::protocol::types::FrontendMsg::Query(b"SELECT 1"),
+        &mut buf,
+    );
+    wire.send_raw(&buf).await.unwrap();
+    let (rows, _) = wire.collect_rows().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    // Connection returned to pool on drop.
+    drop(conn);
+}
+
+#[tokio::test]
 async fn test_typed_pool_drain() {
     let pool = TypedPool::connect(ADDR, USER, PASS, DB, 2).await.unwrap();
     pool.drain().await;

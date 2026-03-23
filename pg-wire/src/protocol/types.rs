@@ -84,6 +84,8 @@ pub enum BackendMsg {
     EmptyQueryResponse,
     /// ParameterDescription: param type OIDs from a Describe Statement.
     ParameterDescription { type_oids: Vec<Oid> },
+    /// NotificationResponse: async notification from LISTEN/NOTIFY.
+    NotificationResponse { pid: i32, channel: String, payload: String },
 }
 
 #[derive(Debug, Clone)]

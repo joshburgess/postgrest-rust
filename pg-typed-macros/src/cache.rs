@@ -11,6 +11,9 @@ use std::path::PathBuf;
 pub struct CachedColumn {
     pub name: String,
     pub type_oid: u32,
+    /// True if the column can be NULL.
+    #[serde(default)]
+    pub nullable: bool,
 }
 
 /// A single cached query entry.

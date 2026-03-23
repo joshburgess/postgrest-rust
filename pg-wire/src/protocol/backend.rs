@@ -42,6 +42,7 @@ pub fn parse_message(buf: &mut BytesMut) -> Result<Option<BackendMsg>, String> {
             parse_error_or_notice(&body).map(|e| Some(BackendMsg::NoticeResponse { fields: e }))
         }
         b'I' => Ok(Some(BackendMsg::EmptyQueryResponse)),
+        b'A' => parse_notification(&body),
         b't' => parse_parameter_description(&body),
         other => {
             tracing::warn!("Unknown backend message tag: {}", other as char);
@@ -178,6 +179,18 @@ fn parse_parameter_description(body: &[u8]) -> Result<Option<BackendMsg>, String
         offset += 4;
     }
     Ok(Some(BackendMsg::ParameterDescription { type_oids }))
+}
+
+/// Parse NotificationResponse: pid(i32) + channel(cstring) + payload(cstring)
+fn parse_notification(body: &[u8]) -> Result<Option<BackendMsg>, String> {
+    let pid = i32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+    let (channel, rest) = split_cstring(&body[4..]);
+    let (payload, _) = split_cstring(rest);
+    Ok(Some(BackendMsg::NotificationResponse {
+        pid,
+        channel: String::from_utf8_lossy(channel).into_owned(),
+        payload: String::from_utf8_lossy(payload).into_owned(),
+    }))
 }
 
 fn parse_error_or_notice(body: &[u8]) -> Result<PgError, String> {
