@@ -1,0 +1,312 @@
+//! Integration tests for pg-typed.
+//! Requires: docker compose up -d (PostgreSQL on port 54322)
+
+use pg_typed::{Client, Decode, Encode};
+
+const ADDR: &str = "127.0.0.1:54322";
+const USER: &str = "postgres";
+const PASS: &str = "postgres";
+const DB: &str = "postgrest_test";
+
+async fn connect() -> Client {
+    Client::connect(ADDR, USER, PASS, DB).await.unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Binary encode/decode unit tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_encode_decode_bool() {
+    let mut buf = bytes::BytesMut::new();
+    true.encode(&mut buf);
+    assert_eq!(buf.as_ref(), &[1]);
+    assert_eq!(bool::decode(&buf).unwrap(), true);
+
+    buf.clear();
+    false.encode(&mut buf);
+    assert_eq!(buf.as_ref(), &[0]);
+    assert_eq!(bool::decode(&buf).unwrap(), false);
+}
+
+#[test]
+fn test_encode_decode_i16() {
+    let mut buf = bytes::BytesMut::new();
+    42i16.encode(&mut buf);
+    assert_eq!(buf.as_ref(), &[0, 42]);
+    assert_eq!(i16::decode(&buf).unwrap(), 42);
+
+    buf.clear();
+    (-1i16).encode(&mut buf);
+    assert_eq!(i16::decode(&buf).unwrap(), -1);
+}
+
+#[test]
+fn test_encode_decode_i32() {
+    let mut buf = bytes::BytesMut::new();
+    12345i32.encode(&mut buf);
+    assert_eq!(i32::decode(&buf).unwrap(), 12345);
+
+    buf.clear();
+    i32::MIN.encode(&mut buf);
+    assert_eq!(i32::decode(&buf).unwrap(), i32::MIN);
+
+    buf.clear();
+    i32::MAX.encode(&mut buf);
+    assert_eq!(i32::decode(&buf).unwrap(), i32::MAX);
+}
+
+#[test]
+fn test_encode_decode_i64() {
+    let mut buf = bytes::BytesMut::new();
+    123456789012345i64.encode(&mut buf);
+    assert_eq!(i64::decode(&buf).unwrap(), 123456789012345);
+}
+
+#[test]
+fn test_encode_decode_f32() {
+    let mut buf = bytes::BytesMut::new();
+    3.14f32.encode(&mut buf);
+    let decoded = f32::decode(&buf).unwrap();
+    assert!((decoded - 3.14).abs() < 1e-6);
+}
+
+#[test]
+fn test_encode_decode_f64() {
+    let mut buf = bytes::BytesMut::new();
+    std::f64::consts::PI.encode(&mut buf);
+    let decoded = f64::decode(&buf).unwrap();
+    assert!((decoded - std::f64::consts::PI).abs() < 1e-15);
+}
+
+#[test]
+fn test_encode_decode_string() {
+    let mut buf = bytes::BytesMut::new();
+    "hello world".encode(&mut buf);
+    assert_eq!(String::decode(&buf).unwrap(), "hello world");
+}
+
+#[test]
+fn test_encode_decode_bytes() {
+    let mut buf = bytes::BytesMut::new();
+    let data = vec![0u8, 1, 2, 255, 128];
+    data.encode(&mut buf);
+    assert_eq!(Vec::<u8>::decode(&buf).unwrap(), data);
+}
+
+#[test]
+fn test_decode_wrong_size() {
+    assert!(i32::decode(&[0, 0]).is_err());
+    assert!(i64::decode(&[0, 0, 0, 0]).is_err());
+    assert!(bool::decode(&[]).is_err());
+    assert!(f32::decode(&[0]).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests: binary-format queries against real PostgreSQL
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_query_select_int() {
+    let client = connect().await;
+    let rows = client.query("SELECT $1::int4 AS n", &[&42i32]).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    let n: i32 = rows[0].get(0).unwrap();
+    assert_eq!(n, 42);
+}
+
+#[tokio::test]
+async fn test_query_select_text() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT $1::text AS val", &[&"hello"])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let val: String = rows[0].get(0).unwrap();
+    assert_eq!(val, "hello");
+}
+
+#[tokio::test]
+async fn test_query_select_bool() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT $1::bool AS flag", &[&true])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let flag: bool = rows[0].get(0).unwrap();
+    assert!(flag);
+}
+
+#[tokio::test]
+async fn test_query_select_float8() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT $1::float8 AS val", &[&3.14f64])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let val: f64 = rows[0].get(0).unwrap();
+    assert!((val - 3.14).abs() < 1e-10);
+}
+
+#[tokio::test]
+async fn test_query_select_bigint() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT $1::int8 AS val", &[&9999999999i64])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let val: i64 = rows[0].get(0).unwrap();
+    assert_eq!(val, 9999999999);
+}
+
+#[tokio::test]
+async fn test_query_multiple_columns() {
+    let client = connect().await;
+    let rows = client
+        .query(
+            "SELECT $1::int4 AS a, $2::text AS b, $3::bool AS c",
+            &[&10i32, &"foo", &false],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let a: i32 = rows[0].get(0).unwrap();
+    let b: String = rows[0].get(1).unwrap();
+    let c: bool = rows[0].get(2).unwrap();
+    assert_eq!(a, 10);
+    assert_eq!(b, "foo");
+    assert!(!c);
+}
+
+#[tokio::test]
+async fn test_query_multiple_rows() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT generate_series(1, 5)::int4 AS n", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 5);
+    for (i, row) in rows.iter().enumerate() {
+        let n: i32 = row.get(0).unwrap();
+        assert_eq!(n, (i + 1) as i32);
+    }
+}
+
+#[tokio::test]
+async fn test_query_null() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT NULL::int4 AS n", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let n: Option<i32> = rows[0].get_opt(0).unwrap();
+    assert!(n.is_none());
+}
+
+#[tokio::test]
+async fn test_query_one() {
+    let client = connect().await;
+    let row = client.query_one("SELECT 42::int4 AS n", &[]).await.unwrap();
+    let n: i32 = row.get(0).unwrap();
+    assert_eq!(n, 42);
+}
+
+#[tokio::test]
+async fn test_query_one_not_found() {
+    let client = connect().await;
+    let result = client
+        .query_one("SELECT 1 WHERE false", &[])
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_query_opt_some() {
+    let client = connect().await;
+    let row = client.query_opt("SELECT 42::int4 AS n", &[]).await.unwrap();
+    assert!(row.is_some());
+    let n: i32 = row.unwrap().get(0).unwrap();
+    assert_eq!(n, 42);
+}
+
+#[tokio::test]
+async fn test_query_opt_none() {
+    let client = connect().await;
+    let row = client.query_opt("SELECT 1 WHERE false", &[]).await.unwrap();
+    assert!(row.is_none());
+}
+
+#[tokio::test]
+async fn test_query_no_params() {
+    let client = connect().await;
+    let rows = client.query("SELECT 1::int4 AS n", &[]).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    let n: i32 = rows[0].get(0).unwrap();
+    assert_eq!(n, 1);
+}
+
+#[tokio::test]
+async fn test_query_real_table() {
+    let client = connect().await;
+    let rows = client
+        .query("SELECT id, name FROM api.authors ORDER BY id", &[])
+        .await
+        .unwrap();
+    assert!(rows.len() >= 3);
+    // Columns come back as binary ints and text.
+    let id: i32 = rows[0].get(0).unwrap();
+    assert_eq!(id, 1);
+    let name: String = rows[0].get(1).unwrap();
+    assert_eq!(name, "Alice");
+}
+
+#[tokio::test]
+async fn test_query_with_filter() {
+    let client = connect().await;
+    let rows = client
+        .query(
+            "SELECT name FROM api.authors WHERE id = $1",
+            &[&1i32],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let name: String = rows[0].get(0).unwrap();
+    assert_eq!(name, "Alice");
+}
+
+#[tokio::test]
+async fn test_statement_cache() {
+    let client = connect().await;
+    // First call: Parse + Bind + Execute + Sync
+    let r1 = client.query("SELECT $1::int4 AS n", &[&1i32]).await.unwrap();
+    // Second call: cache hit — Bind + Execute + Sync (no Parse)
+    let r2 = client.query("SELECT $1::int4 AS n", &[&2i32]).await.unwrap();
+    assert_eq!(r1[0].get::<i32>(0).unwrap(), 1);
+    assert_eq!(r2[0].get::<i32>(0).unwrap(), 2);
+}
+
+#[tokio::test]
+async fn test_error_recovery() {
+    let client = connect().await;
+    let result = client.query("SELECT * FROM nonexistent_xyz_table", &[]).await;
+    assert!(result.is_err());
+    // Connection should still work.
+    let rows = client.query("SELECT 1::int4 AS n", &[]).await.unwrap();
+    assert_eq!(rows[0].get::<i32>(0).unwrap(), 1);
+}
+
+#[tokio::test]
+async fn test_sequential_typed_queries() {
+    let client = connect().await;
+    for i in 0..10i32 {
+        let rows = client.query("SELECT $1::int4 AS n", &[&i]).await.unwrap();
+        let n: i32 = rows[0].get(0).unwrap();
+        assert_eq!(n, i);
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "pg-typed"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pg-wire = { path = "../pg-wire" }
+bytes = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

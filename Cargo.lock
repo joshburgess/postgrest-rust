@@ -1297,6 +1297,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pg-typed"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "pg-wire",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "pg-wire"
 version = "0.1.0"
 dependencies = [

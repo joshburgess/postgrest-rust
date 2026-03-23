@@ -117,7 +117,7 @@ impl AsyncConn {
     }
 
     /// Look up or allocate a statement name.
-    fn lookup_or_alloc(&self, sql: &str) -> (Vec<u8>, bool) {
+    pub fn lookup_or_alloc(&self, sql: &str) -> (Vec<u8>, bool) {
         let mut cache = self.stmt_cache.lock().unwrap();
         if let Some((name, _)) = cache.get(sql) {
             return (name.as_bytes().to_vec(), false);
