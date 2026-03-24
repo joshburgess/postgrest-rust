@@ -56,6 +56,12 @@ pub enum FrontendMsg<'a> {
     },
     /// SASL response (continuation).
     SASLResponse(&'a [u8]),
+    /// CopyData: a chunk of COPY data sent to server.
+    CopyData(&'a [u8]),
+    /// CopyDone: signal that COPY data is complete.
+    CopyDone,
+    /// CopyFail: abort COPY with an error message.
+    CopyFail(&'a [u8]),
     /// Terminate: close connection.
     Terminate,
 }
@@ -86,6 +92,22 @@ pub enum BackendMsg {
     ParameterDescription { type_oids: Vec<Oid> },
     /// NotificationResponse: async notification from LISTEN/NOTIFY.
     NotificationResponse { pid: i32, channel: String, payload: String },
+    /// PortalSuspended: Execute completed with row limit, portal still open.
+    PortalSuspended,
+    /// CopyInResponse: server is ready to receive COPY data.
+    CopyInResponse {
+        format: u8,           // 0=text, 1=binary
+        column_formats: Vec<i16>,
+    },
+    /// CopyOutResponse: server is about to send COPY data.
+    CopyOutResponse {
+        format: u8,
+        column_formats: Vec<i16>,
+    },
+    /// CopyData: a chunk of COPY data (in either direction).
+    CopyData { data: Vec<u8> },
+    /// CopyDone: COPY stream completed.
+    CopyDone,
 }
 
 #[derive(Debug, Clone)]

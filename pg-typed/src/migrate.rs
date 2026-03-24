@@ -14,10 +14,7 @@ use crate::error::TypedError;
 /// Each migration runs in its own transaction.
 pub async fn run(database_url: &str, migrations_dir: &str) -> Result<usize, TypedError> {
     let (user, password, host, port, database) =
-        parse_uri(database_url).ok_or_else(|| TypedError::Decode {
-            column: 0,
-            message: "Invalid database URL".into(),
-        })?;
+        parse_uri(database_url).ok_or_else(|| TypedError::Config("Invalid database URL".into()))?;
     let addr = format!("{host}:{port}");
 
     let conn = WireConn::connect(&addr, &user, &password, &database).await?;
@@ -50,14 +47,8 @@ pub async fn run(database_url: &str, migrations_dir: &str) -> Result<usize, Type
     }
 
     let mut migrations: Vec<(i64, String, std::path::PathBuf)> = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| TypedError::Decode {
-        column: 0,
-        message: format!("Failed to read migrations dir: {e}"),
-    })? {
-        let entry = entry.map_err(|e| TypedError::Decode {
-            column: 0,
-            message: format!("dir entry error: {e}"),
-        })?;
+    for entry in std::fs::read_dir(dir).map_err(TypedError::Io)? {
+        let entry = entry.map_err(TypedError::Io)?;
         let path = entry.path();
         let name = path.file_name().unwrap_or_default().to_str().unwrap_or("");
         if !name.ends_with(".up.sql") {
@@ -76,10 +67,7 @@ pub async fn run(database_url: &str, migrations_dir: &str) -> Result<usize, Type
         if applied.contains(version) {
             continue;
         }
-        let sql = std::fs::read_to_string(path).map_err(|e| TypedError::Decode {
-            column: 0,
-            message: format!("Failed to read migration: {e}"),
-        })?;
+        let sql = std::fs::read_to_string(path).map_err(TypedError::Io)?;
 
         pg.simple_query("BEGIN").await?;
         if let Err(e) = pg.simple_query(&sql).await {

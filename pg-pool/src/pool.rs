@@ -28,6 +28,14 @@ pub trait Poolable: Send + 'static {
 
     /// Check if the connection has unconsumed data (is in a corrupted state).
     fn has_pending_data(&self) -> bool;
+
+    /// Reset the connection to a clean state before returning to the pool.
+    /// Implementations should send `DISCARD ALL` or equivalent to clear
+    /// session state (transactions, SET variables, temp tables, prepared statements).
+    /// Returns false if the reset failed and the connection should be destroyed.
+    fn reset(&self) -> impl std::future::Future<Output = bool> + Send {
+        async { true } // default: no-op (backward compatible)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +374,17 @@ impl<C: Poolable> ConnPool<C> {
             return;
         }
 
+        // Reset connection state (DISCARD ALL) to prevent dirty state leaking.
+        if !conn.reset().await {
+            self.in_use_count.fetch_sub(1, Ordering::Relaxed);
+            self.destroy_conn_stats();
+            if let Some(ref hook) = self.hooks.on_destroy {
+                hook();
+            }
+            self.maybe_notify_drain();
+            return;
+        }
+
         if let Some(ref hook) = self.hooks.on_checkin {
             hook();
         }
@@ -429,6 +448,30 @@ impl<C: Poolable> ConnPool<C> {
             total_created: self.total_created.load(Ordering::Relaxed),
             total_destroyed: self.total_destroyed.load(Ordering::Relaxed),
             total_timeouts: self.total_timeouts.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Pre-populate the pool to a target number of idle connections.
+    /// Useful for warming up on startup to avoid first-request latency.
+    pub async fn warm_up(&self, target: usize) {
+        let current = self.metrics().total;
+        let to_create = target.saturating_sub(current).min(self.config.max_size - current);
+        let mut created = 0;
+        for _ in 0..to_create {
+            match self.create_connection().await {
+                Ok(idle_conn) => {
+                    self.idle.lock().await.push_back(idle_conn);
+                    self.total_count.fetch_add(1, Ordering::Relaxed);
+                    created += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("warm_up: failed to create connection: {e}");
+                    break;
+                }
+            }
+        }
+        if created > 0 {
+            tracing::info!(created, target, "pool warm-up complete");
         }
     }
 

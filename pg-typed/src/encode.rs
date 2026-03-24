@@ -122,6 +122,28 @@ impl Encode for crate::newtypes::PgNumeric {
     }
 }
 
+impl Encode for crate::newtypes::PgTimestamp {
+    fn type_oid(&self) -> TypeOid { TypeOid::Timestamp }
+    fn encode(&self, buf: &mut BytesMut) {
+        match self {
+            crate::newtypes::PgTimestamp::Value(us) => buf.put_i64(*us),
+            crate::newtypes::PgTimestamp::Infinity => buf.put_i64(i64::MAX),
+            crate::newtypes::PgTimestamp::NegInfinity => buf.put_i64(i64::MIN),
+        }
+    }
+}
+
+impl Encode for crate::newtypes::PgDate {
+    fn type_oid(&self) -> TypeOid { TypeOid::Date }
+    fn encode(&self, buf: &mut BytesMut) {
+        match self {
+            crate::newtypes::PgDate::Value(d) => buf.put_i32(*d),
+            crate::newtypes::PgDate::Infinity => buf.put_i32(i32::MAX),
+            crate::newtypes::PgDate::NegInfinity => buf.put_i32(i32::MIN),
+        }
+    }
+}
+
 impl Encode for crate::newtypes::PgInet {
     fn type_oid(&self) -> TypeOid { TypeOid::Inet }
     fn encode(&self, buf: &mut BytesMut) {
@@ -130,7 +152,7 @@ impl Encode for crate::newtypes::PgInet {
 }
 
 // ---------------------------------------------------------------------------
-// Array types: Vec<i32>, Vec<i64>, Vec<String>
+// Array types: generic via macro for all Encode + PgType types
 // ---------------------------------------------------------------------------
 
 /// Encode a PG array header: ndim=1, has_null, element_oid, dim_len, lower_bound=1.
@@ -142,38 +164,32 @@ fn encode_array_header(buf: &mut BytesMut, has_null: bool, element_oid: u32, len
     buf.put_i32(1); // lower bound
 }
 
-impl Encode for Vec<i32> {
-    fn type_oid(&self) -> TypeOid { TypeOid::Int4Array }
-    fn encode(&self, buf: &mut BytesMut) {
-        encode_array_header(buf, false, 23, self.len());
-        for v in self {
-            buf.put_i32(4); // element length
-            buf.put_i32(*v);
+macro_rules! impl_array_encode {
+    ($t:ty, $array_oid_variant:ident) => {
+        impl Encode for Vec<$t> {
+            fn type_oid(&self) -> TypeOid { TypeOid::$array_oid_variant }
+            fn encode(&self, buf: &mut BytesMut) {
+                encode_array_header(
+                    buf,
+                    false,
+                    <$t as crate::pg_type::PgType>::OID,
+                    self.len(),
+                );
+                for v in self {
+                    v.encode_param(buf);
+                }
+            }
         }
-    }
+    };
 }
 
-impl Encode for Vec<i64> {
-    fn type_oid(&self) -> TypeOid { TypeOid::Int8Array }
-    fn encode(&self, buf: &mut BytesMut) {
-        encode_array_header(buf, false, 20, self.len());
-        for v in self {
-            buf.put_i32(8);
-            buf.put_i64(*v);
-        }
-    }
-}
-
-impl Encode for Vec<String> {
-    fn type_oid(&self) -> TypeOid { TypeOid::TextArray }
-    fn encode(&self, buf: &mut BytesMut) {
-        encode_array_header(buf, false, 25, self.len());
-        for v in self {
-            buf.put_i32(v.len() as i32);
-            buf.put_slice(v.as_bytes());
-        }
-    }
-}
+impl_array_encode!(bool, BoolArray);
+impl_array_encode!(i16, Int2Array);
+impl_array_encode!(i32, Int4Array);
+impl_array_encode!(i64, Int8Array);
+impl_array_encode!(f32, Float4Array);
+impl_array_encode!(f64, Float8Array);
+impl_array_encode!(String, TextArray);
 
 // ---------------------------------------------------------------------------
 // Chrono types (behind "chrono" feature)
@@ -253,6 +269,28 @@ impl Encode for uuid::Uuid {
         buf.put_slice(self.as_bytes());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Feature-gated array types
+// ---------------------------------------------------------------------------
+
+impl_array_encode!(crate::newtypes::PgNumeric, NumericArray);
+impl_array_encode!(crate::newtypes::PgInet, InetArray);
+
+#[cfg(feature = "chrono")]
+impl_array_encode!(chrono::NaiveDate, DateArray);
+#[cfg(feature = "chrono")]
+impl_array_encode!(chrono::NaiveTime, TimeArray);
+#[cfg(feature = "chrono")]
+impl_array_encode!(chrono::NaiveDateTime, TimestampArray);
+#[cfg(feature = "chrono")]
+impl_array_encode!(chrono::DateTime<chrono::Utc>, TimestamptzArray);
+
+#[cfg(feature = "uuid")]
+impl_array_encode!(uuid::Uuid, UuidArray);
+
+#[cfg(feature = "json")]
+impl_array_encode!(serde_json::Value, JsonbArray);
 
 // ---------------------------------------------------------------------------
 // SqlParam: trait for query parameters (supports NULL via Option<T>)

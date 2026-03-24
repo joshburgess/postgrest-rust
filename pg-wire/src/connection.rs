@@ -7,11 +7,12 @@ use crate::protocol::backend;
 use crate::protocol::frontend;
 use crate::protocol::types::{BackendMsg, FrontendMsg};
 use crate::scram::ScramClient;
+use crate::tls::MaybeTlsStream;
 
 /// Raw PostgreSQL wire connection.
 /// Handles TCP I/O, buffered reading, and authentication.
 pub struct WireConn {
-    pub(crate) stream: TcpStream,
+    pub(crate) stream: MaybeTlsStream,
     recv_buf: BytesMut,
     pub pid: i32,
     pub secret: i32,
@@ -34,6 +35,15 @@ impl WireConn {
     ) -> Result<Self, PgWireError> {
         let stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
+
+        // TLS negotiation (if feature enabled).
+        #[cfg(feature = "tls")]
+        let stream = {
+            let hostname = addr.split(':').next().unwrap_or(addr);
+            crate::tls::negotiate_tls(stream, hostname).await?
+        };
+        #[cfg(not(feature = "tls"))]
+        let stream = MaybeTlsStream::Plain(stream);
 
         let mut conn = WireConn {
             stream,
@@ -69,7 +79,9 @@ impl WireConn {
                             format!("No supported SASL mechanism: {:?}", mechanisms),
                         ));
                     }
-                    let (scram, client_first) = ScramClient::new(password);
+                    // Use channel binding if TLS is active.
+                    let cb = crate::scram::ChannelBinding::None;
+                    let (scram, client_first) = ScramClient::new(password, cb);
                     let mut buf = BytesMut::new();
                     frontend::encode_message(
                         &FrontendMsg::SASLInitialResponse {

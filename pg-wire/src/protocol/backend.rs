@@ -44,6 +44,13 @@ pub fn parse_message(buf: &mut BytesMut) -> Result<Option<BackendMsg>, String> {
         b'I' => Ok(Some(BackendMsg::EmptyQueryResponse)),
         b'A' => parse_notification(&body),
         b't' => parse_parameter_description(&body),
+        b's' => Ok(Some(BackendMsg::PortalSuspended)),
+        b'G' => parse_copy_response(&body, true),
+        b'H' => parse_copy_response(&body, false),
+        b'd' => Ok(Some(BackendMsg::CopyData {
+            data: body.to_vec(),
+        })),
+        b'c' => Ok(Some(BackendMsg::CopyDone)),
         other => {
             tracing::warn!("Unknown backend message tag: {}", other as char);
             Ok(Some(BackendMsg::ReadyForQuery { status: b'I' })) // Skip unknown
@@ -191,6 +198,29 @@ fn parse_notification(body: &[u8]) -> Result<Option<BackendMsg>, String> {
         channel: String::from_utf8_lossy(channel).into_owned(),
         payload: String::from_utf8_lossy(payload).into_owned(),
     }))
+}
+
+fn parse_copy_response(body: &[u8], is_in: bool) -> Result<Option<BackendMsg>, String> {
+    let format = body[0];
+    let num_cols = i16::from_be_bytes([body[1], body[2]]) as usize;
+    let mut column_formats = Vec::with_capacity(num_cols);
+    let mut offset = 3;
+    for _ in 0..num_cols {
+        let cf = i16::from_be_bytes([body[offset], body[offset + 1]]);
+        column_formats.push(cf);
+        offset += 2;
+    }
+    if is_in {
+        Ok(Some(BackendMsg::CopyInResponse {
+            format,
+            column_formats,
+        }))
+    } else {
+        Ok(Some(BackendMsg::CopyOutResponse {
+            format,
+            column_formats,
+        }))
+    }
 }
 
 fn parse_error_or_notice(body: &[u8]) -> Result<PgError, String> {

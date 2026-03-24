@@ -1,0 +1,11 @@
+[package]
+name = "pg-schema-cache-v2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pg-schema-cache = { path = "../pg-schema-cache" }
+pg-wire = { path = "../pg-wire" }
+tokio = { version = "1", features = ["sync", "rt"] }
+tracing = "0.1"
+thiserror = "2"

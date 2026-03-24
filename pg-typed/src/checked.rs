@@ -3,10 +3,13 @@
 //! The `query!()` macro generates a `CheckedQuery<T>` that holds the SQL,
 //! encoded params, and a mapper function. The user calls `.fetch_all()`,
 //! `.fetch_one()`, or `.fetch_opt()` to execute it.
+//!
+//! All fetch methods accept `&impl Executor`, so they work with
+//! `Client`, `Transaction`, and `PooledTypedClient`.
 
 use crate::encode::SqlParam;
 use crate::error::TypedError;
-use crate::query::Client;
+use crate::executor::Executor;
 use crate::row::Row;
 
 /// A compile-time checked query ready for execution.
@@ -20,20 +23,20 @@ pub struct CheckedQuery<'a, T> {
 
 impl<'a, T> CheckedQuery<'a, T> {
     /// Execute and return all rows.
-    pub async fn fetch_all(self, client: &Client) -> Result<Vec<T>, TypedError> {
-        let rows = client.query(self.sql, &self.params).await?;
+    pub async fn fetch_all(self, db: &impl Executor) -> Result<Vec<T>, TypedError> {
+        let rows = db.query(self.sql, &self.params).await?;
         rows.iter().map(self.mapper).collect()
     }
 
     /// Execute and return exactly one row.
-    pub async fn fetch_one(self, client: &Client) -> Result<T, TypedError> {
-        let row = client.query_one(self.sql, &self.params).await?;
+    pub async fn fetch_one(self, db: &impl Executor) -> Result<T, TypedError> {
+        let row = db.query_one(self.sql, &self.params).await?;
         (self.mapper)(&row)
     }
 
     /// Execute and return an optional row.
-    pub async fn fetch_opt(self, client: &Client) -> Result<Option<T>, TypedError> {
-        let row = client.query_opt(self.sql, &self.params).await?;
+    pub async fn fetch_opt(self, db: &impl Executor) -> Result<Option<T>, TypedError> {
+        let row = db.query_opt(self.sql, &self.params).await?;
         match row {
             Some(r) => Ok(Some((self.mapper)(&r)?)),
             None => Ok(None),
@@ -50,22 +53,22 @@ pub struct UncheckedQuery<'a> {
 
 impl<'a> UncheckedQuery<'a> {
     /// Execute and return raw rows.
-    pub async fn fetch_all(self, client: &Client) -> Result<Vec<Row>, TypedError> {
-        client.query(self.sql, &self.params).await
+    pub async fn fetch_all(self, db: &impl Executor) -> Result<Vec<Row>, TypedError> {
+        db.query(self.sql, &self.params).await
     }
 
     /// Execute and return exactly one row.
-    pub async fn fetch_one(self, client: &Client) -> Result<Row, TypedError> {
-        client.query_one(self.sql, &self.params).await
+    pub async fn fetch_one(self, db: &impl Executor) -> Result<Row, TypedError> {
+        db.query_one(self.sql, &self.params).await
     }
 
     /// Execute and return an optional row.
-    pub async fn fetch_opt(self, client: &Client) -> Result<Option<Row>, TypedError> {
-        client.query_opt(self.sql, &self.params).await
+    pub async fn fetch_opt(self, db: &impl Executor) -> Result<Option<Row>, TypedError> {
+        db.query_opt(self.sql, &self.params).await
     }
 
     /// Execute a statement (INSERT/UPDATE/DELETE), return affected row count.
-    pub async fn execute(self, client: &Client) -> Result<u64, TypedError> {
-        client.execute(self.sql, &self.params).await
+    pub async fn execute(self, db: &impl Executor) -> Result<u64, TypedError> {
+        db.execute(self.sql, &self.params).await
     }
 }

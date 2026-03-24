@@ -19,10 +19,46 @@ pub enum TypedError {
 
     #[error("type mismatch: expected OID {expected}, got {actual}")]
     TypeMismatch { expected: u32, actual: u32 },
+
+    #[error("pool error: {0}")]
+    Pool(String),
+
+    #[error("query timed out after {0:?}")]
+    Timeout(std::time::Duration),
+
+    #[error("missing named parameter: :{0}")]
+    MissingParam(String),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("{0}")]
+    Config(String),
+
+    #[error("query failed: {source} [SQL: {sql}]")]
+    QueryFailed {
+        source: Box<TypedError>,
+        sql: String,
+    },
 }
 
 impl From<pg_wire::PgWireError> for TypedError {
     fn from(e: pg_wire::PgWireError) -> Self {
         Self::Wire(Box::new(e))
+    }
+}
+
+impl TypedError {
+    /// Attach SQL context to an error for debugging.
+    pub fn with_sql(self, sql: &str) -> Self {
+        let truncated = if sql.len() > 200 {
+            format!("{}...", &sql[..200])
+        } else {
+            sql.to_string()
+        };
+        TypedError::QueryFailed {
+            source: Box::new(self),
+            sql: truncated,
+        }
     }
 }

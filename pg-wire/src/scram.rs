@@ -1,5 +1,6 @@
 //! SCRAM-SHA-256 authentication for PostgreSQL.
-//! Implements the client side of SASL/SCRAM-SHA-256.
+//! Supports both SCRAM-SHA-256 (no channel binding) and SCRAM-SHA-256-PLUS
+//! (tls-server-end-point channel binding when TLS is active).
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -10,25 +11,46 @@ type HmacSha256 = Hmac<Sha256>;
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
 
+/// Channel binding mode for SCRAM authentication.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub enum ChannelBinding {
+    /// No channel binding (SCRAM-SHA-256). GS2 header: `n,,`
+    None,
+    /// tls-server-end-point channel binding (SCRAM-SHA-256-PLUS).
+    /// Contains the SHA-256 hash of the server's TLS certificate.
+    TlsServerEndPoint(Vec<u8>),
+}
+
 /// SCRAM client state machine.
 pub struct ScramClient {
     password: String,
     nonce: String,
     client_first_bare: String,
+    channel_binding: ChannelBinding,
 }
 
 impl ScramClient {
     /// Create a new SCRAM client and generate the client-first-message.
-    pub fn new(password: &str) -> (Self, Vec<u8>) {
+    /// `channel_binding` should be `None` for plain connections or
+    /// `TlsServerEndPoint(cert_hash)` for TLS connections.
+    pub fn new(password: &str, channel_binding: ChannelBinding) -> (Self, Vec<u8>) {
         let nonce = generate_nonce();
         let client_first_bare = format!("n=,r={nonce}");
-        let client_first_msg = format!("n,,{client_first_bare}");
+
+        // GS2 header: "p=tls-server-end-point,," for channel binding, "n,," otherwise.
+        let gs2_header = match &channel_binding {
+            ChannelBinding::None => "n,,".to_string(),
+            ChannelBinding::TlsServerEndPoint(_) => "p=tls-server-end-point,,".to_string(),
+        };
+        let client_first_msg = format!("{gs2_header}{client_first_bare}");
 
         (
             ScramClient {
                 password: password.to_string(),
                 nonce,
                 client_first_bare,
+                channel_binding,
             },
             client_first_msg.into_bytes(),
         )
@@ -65,7 +87,17 @@ impl ScramClient {
         let client_key = hmac_sha256(&salted_password, b"Client Key");
         let stored_key = sha256(&client_key);
 
-        let client_final_without_proof = format!("c=biws,r={server_nonce}");
+        // Channel binding data for client-final-message.
+        let channel_binding_data = match &self.channel_binding {
+            ChannelBinding::None => B64.encode(b"n,,"),
+            ChannelBinding::TlsServerEndPoint(cert_hash) => {
+                let mut cb = b"p=tls-server-end-point,,".to_vec();
+                cb.extend_from_slice(cert_hash);
+                B64.encode(&cb)
+            }
+        };
+
+        let client_final_without_proof = format!("c={channel_binding_data},r={server_nonce}");
         let auth_message = format!(
             "{},{server_first},{client_final_without_proof}",
             self.client_first_bare

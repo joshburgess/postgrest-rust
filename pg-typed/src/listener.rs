@@ -70,21 +70,19 @@ impl PgListener {
     pub async fn recv(&mut self) -> Result<Notification, TypedError> {
         loop {
             let msg = self.pipeline.conn().recv_msg().await?;
-            match msg {
-                BackendMsg::NotificationResponse {
+            if let BackendMsg::NotificationResponse {
+                pid,
+                channel,
+                payload,
+            } = msg
+            {
+                return Ok(Notification {
                     pid,
                     channel,
                     payload,
-                } => {
-                    return Ok(Notification {
-                        pid,
-                        channel,
-                        payload,
-                    });
-                }
-                // Skip other async messages (ParameterStatus, NoticeResponse, etc.)
-                _ => {}
+                });
             }
+            // Skip other async messages (ParameterStatus, NoticeResponse, etc.)
         }
     }
 

@@ -3,6 +3,8 @@
 //!   docker compose up -d (PostgreSQL on port 54322)
 //!   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgrest_test
 
+#![allow(clippy::approx_constant)]
+
 use pg_typed::Client;
 
 const ADDR: &str = "127.0.0.1:54322";
@@ -282,4 +284,51 @@ async fn test_nullable_column_detection() {
     // The type (String or Option<String>) depends on nullability detection.
     let bio_str: String = format!("{:?}", row.bio);
     assert!(bio_str.contains("Rust"));
+}
+
+// ---------------------------------------------------------------------------
+// Named parameters in compile-time macros
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_query_macro_named_params() {
+    let client = connect().await;
+    let id = 1i32;
+    let row = pg_typed::query!("SELECT id, name FROM api.authors WHERE id = :id", id = id)
+        .fetch_one(&client)
+        .await
+        .unwrap();
+    assert_eq!(row.id, 1);
+    assert_eq!(row.name, "Alice");
+}
+
+#[tokio::test]
+async fn test_query_macro_named_params_multiple() {
+    let client = connect().await;
+    let a_val = 10i32;
+    let b_val = "hello".to_string();
+    let row = pg_typed::query!(
+        "SELECT :a::int4 AS a, :b::text AS b",
+        a = a_val,
+        b = b_val,
+    )
+    .fetch_one(&client)
+    .await
+    .unwrap();
+    assert_eq!(row.a, Some(10));
+    assert_eq!(row.b, Some("hello".to_string()));
+}
+
+#[tokio::test]
+async fn test_query_scalar_named() {
+    let client = connect().await;
+    let id_val = 1i32;
+    let count = pg_typed::query_scalar!(
+        "SELECT count(*)::int4 FROM api.authors WHERE id = :id",
+        id = id_val,
+    )
+    .fetch_one(&client)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
 }

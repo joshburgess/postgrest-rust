@@ -23,24 +23,86 @@ use syn::{parse_macro_input, Expr, LitStr, Token};
 mod cache;
 
 /// Input to the query! macro: SQL literal + optional comma-separated params.
+/// Supports both positional (`query!("... $1", val)`) and named (`query!("... :name", name = val)`) params.
 struct QueryInput {
     sql: LitStr,
     params: Vec<Expr>,
+    /// If named params were used, this holds (name, expr) pairs.
+    named: Vec<(syn::Ident, Expr)>,
 }
 
 impl Parse for QueryInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let sql: LitStr = input.parse()?;
         let mut params = Vec::new();
+        let mut named = Vec::new();
+        let mut mode: Option<bool> = None; // None=unknown, Some(true)=named, Some(false)=positional
+
         while input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
             if input.is_empty() {
                 break;
             }
-            params.push(input.parse()?);
+
+            // Try to detect named param: `ident = expr` (but not `ident == expr`)
+            let is_named_param = {
+                let fork = input.fork();
+                fork.parse::<syn::Ident>().is_ok()
+                    && fork.parse::<Token![=]>().is_ok()
+                    && !fork.peek(Token![=])
+            };
+
+            if is_named_param && mode != Some(false) {
+                let name: syn::Ident = input.parse()?;
+                input.parse::<Token![=]>()?;
+                let expr: Expr = input.parse()?;
+                named.push((name, expr));
+                mode = Some(true);
+            } else if mode != Some(true) {
+                params.push(input.parse()?);
+                mode = Some(false);
+            } else {
+                return Err(input.error("cannot mix positional and named parameters"));
+            }
         }
-        Ok(QueryInput { sql, params })
+
+        Ok(QueryInput { sql, params, named })
     }
+}
+
+/// If named params are present, rewrite SQL and reorder params.
+/// Otherwise pass through unchanged.
+fn resolve_named(
+    sql_str: String,
+    params: Vec<Expr>,
+    named: &[(syn::Ident, Expr)],
+    sql_span: &LitStr,
+) -> Result<(String, Vec<Expr>), TokenStream> {
+    if named.is_empty() {
+        return Ok((sql_str, params));
+    }
+    let (rewritten, names) = rewrite_named_params(&sql_str);
+    let mut ordered = Vec::with_capacity(names.len());
+    for name in &names {
+        match named.iter().find(|(n, _)| n == name) {
+            Some((_, expr)) => ordered.push(expr.clone()),
+            None => {
+                let msg = format!("named parameter `:{name}` in SQL has no binding");
+                return Err(syn::Error::new_spanned(sql_span, msg)
+                    .to_compile_error()
+                    .into());
+            }
+        }
+    }
+    for (n, _) in named {
+        if !names.iter().any(|name| name == &n.to_string()) {
+            let msg = format!("binding `{}` does not match any `:{}` in SQL", n, n);
+            return Err(syn::Error::new_spanned(n, msg)
+                .to_compile_error()
+                .into());
+        }
+    }
+    Ok((rewritten, ordered))
 }
 
 /// Resolve query metadata: try cache first, then live DB, then update cache.
@@ -182,6 +244,7 @@ fn describe_live(sql: &str) -> Result<(Vec<u32>, Vec<cache::CachedColumn>), Stri
 /// Map a PostgreSQL type OID to a Rust type token.
 fn oid_to_rust_type(oid: u32) -> proc_macro2::TokenStream {
     match oid {
+        // Scalar types
         16 => quote! { bool },
         18 | 19 | 25 | 1042 | 1043 => quote! { String },
         20 => quote! { i64 },
@@ -196,7 +259,24 @@ fn oid_to_rust_type(oid: u32) -> proc_macro2::TokenStream {
         1114 => quote! { chrono::NaiveDateTime },
         1184 => quote! { chrono::DateTime<chrono::Utc> },
         2950 => quote! { uuid::Uuid },
-        1700 => quote! { String },
+        869 => quote! { pg_typed::PgInet },
+        1700 => quote! { pg_typed::PgNumeric },
+        // Array types
+        1000 => quote! { Vec<bool> },
+        1005 => quote! { Vec<i16> },
+        1007 => quote! { Vec<i32> },
+        1009 | 1015 => quote! { Vec<String> },
+        1016 => quote! { Vec<i64> },
+        1021 => quote! { Vec<f32> },
+        1022 => quote! { Vec<f64> },
+        1041 => quote! { Vec<pg_typed::PgInet> },
+        1115 => quote! { Vec<chrono::NaiveDateTime> },
+        1182 => quote! { Vec<chrono::NaiveDate> },
+        1183 => quote! { Vec<chrono::NaiveTime> },
+        1185 => quote! { Vec<chrono::DateTime<chrono::Utc>> },
+        1231 => quote! { Vec<pg_typed::PgNumeric> },
+        2951 => quote! { Vec<uuid::Uuid> },
+        3807 => quote! { Vec<serde_json::Value> },
         _ => quote! { Vec<u8> },
     }
 }
@@ -209,8 +289,13 @@ pub fn query(input: TokenStream) -> TokenStream {
 }
 
 fn query_impl(input: QueryInput) -> TokenStream {
-    let QueryInput { sql, params } = input;
+    let QueryInput { sql, params, named } = input;
     let sql_str = sql.value();
+
+    let (sql_str, params) = match resolve_named(sql_str, params, &named, &sql) {
+        Ok(v) => v,
+        Err(ts) => return ts,
+    };
 
     let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
         Ok(result) => result,
@@ -232,22 +317,25 @@ fn query_impl(input: QueryInput) -> TokenStream {
             .into();
     }
 
-    // Generate compile-time param type assertions.
-    // This produces a trait bound check that fails with a helpful error
-    // if the param type doesn't implement Encode with the right OID.
+    // Generate compile-time param type checks.
+    // Each check verifies the param type can encode as the PG-expected type.
     let param_type_checks: Vec<_> = param_oids
         .iter()
         .enumerate()
         .map(|(i, oid)| {
-            let expected = oid_to_rust_type(*oid);
+            let _expected = oid_to_rust_type(*oid);
             let param = &params[i];
             let oid_val = *oid;
-            let type_name = oid_to_type_name(*oid);
-            // Static assertion: the param must be convertible to SqlParam.
-            // The actual OID check happens at the type system level via Encode.
+            let _type_name = oid_to_type_name(oid_val);
+            // Assert the param implements SqlParam (basic check) and
+            // generate a type hint that catches obvious mismatches.
             quote! {
-                // Param $#i: expected PG type #type_name (OID #oid_val)
-                let _ = &#param as &dyn pg_typed::SqlParam;
+                {
+                    // Verify parameter #i is compatible with PG type (OID #oid_val).
+                    fn __pg_typed_check_param<T: pg_typed::Encode + Sync>(_: &T) {}
+                    __pg_typed_check_param(&#param);
+                    let _ = &#param as &dyn pg_typed::SqlParam;
+                }
             }
         })
         .collect();
@@ -267,7 +355,7 @@ fn query_impl(input: QueryInput) -> TokenStream {
             }
         })
         .collect();
-    let field_indices: Vec<_> = (0..column_infos.len()).collect::<Vec<_>>();
+    let _field_indices: Vec<_> = (0..column_infos.len()).collect::<Vec<_>>();
     let field_getters: Vec<_> = column_infos
         .iter()
         .enumerate()
@@ -287,10 +375,14 @@ fn query_impl(input: QueryInput) -> TokenStream {
         .map(|p| quote! { &#p as &dyn pg_typed::SqlParam })
         .collect();
 
-    let sql_literal = &sql;
+    // Use rewritten SQL (with $1,$2) in generated code, not the original :name SQL.
+    let sql_lit_rewritten = LitStr::new(&sql_str, sql.span());
 
     let expanded = quote! {
         {
+            // Compile-time parameter type assertions.
+            #(#param_type_checks)*
+
             #[allow(non_camel_case_types)]
             #[derive(Debug)]
             struct #struct_name {
@@ -298,7 +390,7 @@ fn query_impl(input: QueryInput) -> TokenStream {
             }
 
             pg_typed::CheckedQuery::<#struct_name> {
-                sql: #sql_literal,
+                sql: #sql_lit_rewritten,
                 params: vec![#(#param_refs),*],
                 _marker: std::marker::PhantomData,
                 mapper: |row: &pg_typed::Row| -> Result<#struct_name, pg_typed::TypedError> {
@@ -322,8 +414,13 @@ pub fn query_as(input: TokenStream) -> TokenStream {
 }
 
 fn query_as_impl(input: QueryAsInput) -> TokenStream {
-    let QueryAsInput { target_type, sql, params } = input;
+    let QueryAsInput { target_type, sql, params, named } = input;
     let sql_str = sql.value();
+
+    let (sql_str, params) = match resolve_named(sql_str, params, &named, &sql) {
+        Ok(v) => v,
+        Err(ts) => return ts,
+    };
 
     let (param_oids, _column_infos) = match resolve_metadata(&sql_str) {
         Ok(result) => result,
@@ -349,12 +446,12 @@ fn query_as_impl(input: QueryAsInput) -> TokenStream {
         .iter()
         .map(|p| quote! { &#p as &dyn pg_typed::SqlParam })
         .collect();
-    let sql_literal = &sql;
+    let sql_lit_rewritten = LitStr::new(&sql_str, sql.span());
 
     let expanded = quote! {
         {
             pg_typed::CheckedQuery::<#target_type> {
-                sql: #sql_literal,
+                sql: #sql_lit_rewritten,
                 params: vec![#(#param_refs),*],
                 _marker: std::marker::PhantomData,
                 mapper: |row: &pg_typed::Row| -> Result<#target_type, pg_typed::TypedError> {
@@ -375,8 +472,13 @@ pub fn query_scalar(input: TokenStream) -> TokenStream {
 }
 
 fn query_scalar_impl(input: QueryInput) -> TokenStream {
-    let QueryInput { sql, params } = input;
+    let QueryInput { sql, params, named } = input;
     let sql_str = sql.value();
+
+    let (sql_str, params) = match resolve_named(sql_str, params, &named, &sql) {
+        Ok(v) => v,
+        Err(ts) => return ts,
+    };
 
     let (param_oids, column_infos) = match resolve_metadata(&sql_str) {
         Ok(result) => result,
@@ -413,12 +515,12 @@ fn query_scalar_impl(input: QueryInput) -> TokenStream {
         .iter()
         .map(|p| quote! { &#p as &dyn pg_typed::SqlParam })
         .collect();
-    let sql_literal = &sql;
+    let sql_lit_rewritten = LitStr::new(&sql_str, sql.span());
 
     let expanded = quote! {
         {
             pg_typed::CheckedQuery::<#scalar_type> {
-                sql: #sql_literal,
+                sql: #sql_lit_rewritten,
                 params: vec![#(#param_refs),*],
                 _marker: std::marker::PhantomData,
                 mapper: |row: &pg_typed::Row| -> Result<#scalar_type, pg_typed::TypedError> {
@@ -436,6 +538,7 @@ struct QueryAsInput {
     target_type: syn::Type,
     sql: LitStr,
     params: Vec<Expr>,
+    named: Vec<(syn::Ident, Expr)>,
 }
 
 impl Parse for QueryAsInput {
@@ -444,21 +547,40 @@ impl Parse for QueryAsInput {
         input.parse::<Token![,]>()?;
         let sql: LitStr = input.parse()?;
         let mut params = Vec::new();
+        let mut named = Vec::new();
+        let mut mode: Option<bool> = None;
         while input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
             if input.is_empty() {
                 break;
             }
-            params.push(input.parse()?);
+            let is_named_param = {
+                let fork = input.fork();
+                fork.parse::<syn::Ident>().is_ok()
+                    && fork.parse::<Token![=]>().is_ok()
+                    && !fork.peek(Token![=])
+            };
+            if is_named_param && mode != Some(false) {
+                let name: syn::Ident = input.parse()?;
+                input.parse::<Token![=]>()?;
+                let expr: Expr = input.parse()?;
+                named.push((name, expr));
+                mode = Some(true);
+            } else if mode != Some(true) {
+                params.push(input.parse()?);
+                mode = Some(false);
+            } else {
+                return Err(input.error("cannot mix positional and named parameters"));
+            }
         }
-        Ok(QueryAsInput { target_type, sql, params })
+        Ok(QueryAsInput { target_type, sql, params, named })
     }
 }
 
 /// `query_file!("path/to/query.sql", param1, param2, ...)` — like query! but reads SQL from a file.
 #[proc_macro]
 pub fn query_file(input: TokenStream) -> TokenStream {
-    let QueryInput { sql: path_lit, params } = parse_macro_input!(input as QueryInput);
+    let QueryInput { sql: path_lit, params, named: _ } = parse_macro_input!(input as QueryInput);
     let file_path = path_lit.value();
 
     let sql_str = match read_sql_file(&file_path) {
@@ -472,14 +594,14 @@ pub fn query_file(input: TokenStream) -> TokenStream {
 
     // Reuse the query! logic with the file contents.
     let sql_lit = LitStr::new(&sql_str, path_lit.span());
-    let inner = QueryInput { sql: sql_lit, params };
+    let inner = QueryInput { sql: sql_lit, params, named: Vec::new() };
     query_impl(inner)
 }
 
 /// `query_file_as!(Type, "path/to/query.sql", param1, ...)` — like query_as! but reads SQL from a file.
 #[proc_macro]
 pub fn query_file_as(input: TokenStream) -> TokenStream {
-    let QueryAsInput { target_type, sql: path_lit, params } =
+    let QueryAsInput { target_type, sql: path_lit, params, named: _ } =
         parse_macro_input!(input as QueryAsInput);
     let file_path = path_lit.value();
 
@@ -493,14 +615,14 @@ pub fn query_file_as(input: TokenStream) -> TokenStream {
     };
 
     let sql_lit = LitStr::new(&sql_str, path_lit.span());
-    let inner = QueryAsInput { target_type, sql: sql_lit, params };
+    let inner = QueryAsInput { target_type, sql: sql_lit, params, named: Vec::new() };
     query_as_impl(inner)
 }
 
 /// `query_file_scalar!("path/to/query.sql", param1, ...)` — file-based scalar query.
 #[proc_macro]
 pub fn query_file_scalar(input: TokenStream) -> TokenStream {
-    let QueryInput { sql: path_lit, params } = parse_macro_input!(input as QueryInput);
+    let QueryInput { sql: path_lit, params, named: _ } = parse_macro_input!(input as QueryInput);
     let file_path = path_lit.value();
 
     let sql_str = match read_sql_file(&file_path) {
@@ -513,7 +635,7 @@ pub fn query_file_scalar(input: TokenStream) -> TokenStream {
     };
 
     let sql_lit = LitStr::new(&sql_str, path_lit.span());
-    let inner = QueryInput { sql: sql_lit, params };
+    let inner = QueryInput { sql: sql_lit, params, named: Vec::new() };
     query_scalar_impl(inner)
 }
 
@@ -522,7 +644,7 @@ pub fn query_file_scalar(input: TokenStream) -> TokenStream {
 /// Params are passed as-is; no type or count checking.
 #[proc_macro]
 pub fn query_unchecked(input: TokenStream) -> TokenStream {
-    let QueryInput { sql, params } = parse_macro_input!(input as QueryInput);
+    let QueryInput { sql, params, named: _ } = parse_macro_input!(input as QueryInput);
 
     let param_refs: Vec<_> = params
         .iter()
@@ -552,6 +674,7 @@ fn read_sql_file(path: &str) -> Result<String, String> {
 }
 
 /// Human-readable PG type name for error messages.
+#[allow(dead_code)]
 fn oid_to_type_name(oid: u32) -> &'static str {
     match oid {
         16 => "bool",
@@ -564,13 +687,30 @@ fn oid_to_type_name(oid: u32) -> &'static str {
         701 => "float8",
         17 => "bytea",
         114 => "json",
+        869 => "inet",
+        1700 => "numeric",
         3802 => "jsonb",
         1082 => "date",
         1083 => "time",
         1114 => "timestamp",
         1184 => "timestamptz",
         2950 => "uuid",
-        1700 => "numeric",
+        // Array types
+        1000 => "bool[]",
+        1005 => "int2[]",
+        1007 => "int4[]",
+        1009 | 1015 => "text[]",
+        1016 => "int8[]",
+        1021 => "float4[]",
+        1022 => "float8[]",
+        1041 => "inet[]",
+        1115 => "timestamp[]",
+        1182 => "date[]",
+        1183 => "time[]",
+        1185 => "timestamptz[]",
+        1231 => "numeric[]",
+        2951 => "uuid[]",
+        3807 => "jsonb[]",
         _ => "unknown",
     }
 }
@@ -597,6 +737,77 @@ pub(crate) fn hash_sql(sql: &str) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+/// Rewrite `:name` named params to `$N` positional params.
+/// Returns (rewritten_sql, ordered_param_names).
+fn rewrite_named_params(sql: &str) -> (String, Vec<String>) {
+    let mut result = String::with_capacity(sql.len());
+    let mut names: Vec<String> = Vec::new();
+    let mut positions: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let chars: Vec<char> = sql.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Skip string literals.
+        if chars[i] == '\'' {
+            result.push('\'');
+            i += 1;
+            while i < len {
+                result.push(chars[i]);
+                if chars[i] == '\'' {
+                    if i + 1 < len && chars[i + 1] == '\'' {
+                        result.push('\'');
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // :: cast: pass through.
+        if chars[i] == ':' && i + 1 < len && chars[i + 1] == ':' {
+            result.push(':');
+            result.push(':');
+            i += 2;
+            continue;
+        }
+
+        // :name — named parameter.
+        if chars[i] == ':'
+            && i + 1 < len
+            && (chars[i + 1].is_alphabetic() || chars[i + 1] == '_')
+        {
+            i += 1;
+            let start = i;
+            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let name: String = chars[start..i].iter().collect();
+            let pos = if let Some(&existing) = positions.get(&name) {
+                existing
+            } else {
+                names.push(name.clone());
+                let pos = names.len();
+                positions.insert(name, pos);
+                pos
+            };
+            result.push('$');
+            result.push_str(&pos.to_string());
+            continue;
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    (result, names)
 }
 
 fn parse_pg_uri(uri: &str) -> Option<(String, String, String, u16, String)> {

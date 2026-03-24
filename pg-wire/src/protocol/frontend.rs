@@ -133,6 +133,23 @@ pub fn encode_message(msg: &FrontendMsg<'_>, buf: &mut BytesMut) {
             buf.put_i32(len as i32);
             buf.put_slice(data);
         }
+        FrontendMsg::CopyData(data) => {
+            let len = 4 + data.len();
+            buf.put_u8(b'd');
+            buf.put_i32(len as i32);
+            buf.put_slice(data);
+        }
+        FrontendMsg::CopyDone => {
+            buf.put_u8(b'c');
+            buf.put_i32(4);
+        }
+        FrontendMsg::CopyFail(msg) => {
+            let len = 4 + msg.len() + 1;
+            buf.put_u8(b'f');
+            buf.put_i32(len as i32);
+            buf.put_slice(msg);
+            buf.put_u8(0);
+        }
         FrontendMsg::Terminate => {
             buf.put_u8(b'X');
             buf.put_i32(4);

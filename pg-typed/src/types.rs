@@ -9,6 +9,7 @@ pub struct TypeInfo {
 }
 
 /// Look up type info by OID.
+#[allow(dead_code)]
 pub fn type_info(oid: u32) -> Option<TypeInfo> {
     match oid {
         16 => Some(TypeInfo { oid: 16, name: "bool", size: 1 }),
@@ -36,6 +37,7 @@ pub fn type_info(oid: u32) -> Option<TypeInfo> {
 }
 
 /// Get the Rust-side type name for a PostgreSQL OID (for error messages).
+#[allow(dead_code)]
 pub fn rust_type_for_oid(oid: u32) -> &'static str {
     match oid {
         16 => "bool",

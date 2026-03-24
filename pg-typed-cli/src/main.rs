@@ -8,6 +8,7 @@
 //!   pg-typed-cli migrate revert        # Revert the last migration
 //!   pg-typed-cli migrate status        # Show migration status
 
+mod database;
 mod migrate;
 
 use clap::{Parser, Subcommand};
@@ -42,6 +43,28 @@ enum Command {
         #[command(subcommand)]
         action: MigrateAction,
     },
+    /// Database lifecycle management (create/drop).
+    Database {
+        #[command(subcommand)]
+        action: DatabaseAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DatabaseAction {
+    /// Create the database if it doesn't exist.
+    Create {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+    },
+    /// Drop the database.
+    Drop {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+        /// Terminate active connections before dropping.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -74,6 +97,28 @@ enum MigrateAction {
         database_url: String,
         #[arg(long, default_value = "migrations")]
         dir: PathBuf,
+    },
+    /// Show the SQL of pending migrations without running them.
+    Info {
+        #[arg(long, default_value = "migrations")]
+        dir: PathBuf,
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+    },
+    /// Validate migration file checksums against applied migrations.
+    Validate {
+        #[arg(long, default_value = "migrations")]
+        dir: PathBuf,
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+    },
+    /// Load seed data from a SQL file.
+    Seed {
+        /// Path to the seed SQL file.
+        #[arg(long, default_value = "seeds/seed.sql")]
+        file: PathBuf,
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
     },
 }
 
@@ -113,6 +158,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             MigrateAction::Status { database_url, dir } => {
                 migrate::status(&database_url, &dir).await?;
+            }
+            MigrateAction::Info { dir, database_url } => {
+                migrate::info(&database_url, &dir).await?;
+            }
+            MigrateAction::Validate { dir, database_url } => {
+                migrate::validate(&database_url, &dir).await?;
+            }
+            MigrateAction::Seed { file, database_url } => {
+                migrate::seed(&database_url, &file).await?;
+            }
+        },
+        Command::Database { action } => match action {
+            DatabaseAction::Create { database_url } => {
+                database::create(&database_url).await?;
+            }
+            DatabaseAction::Drop { database_url, force } => {
+                database::drop(&database_url, force).await?;
             }
         },
     }
@@ -287,15 +349,15 @@ fn scan_dir(dir: &Path, queries: &mut Vec<String>) -> Result<(), Box<dyn std::er
 fn scan_file(path: &Path, queries: &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(path)?;
     // Search for all three macro patterns.
-    for pattern in &["query!(", "query_as!(", "query_scalar!(", "query_file!(", "query_file_as!("] {
+    for pattern in &["query!(", "query_as!(", "query_scalar!(", "query_file!(", "query_file_as!(", "query_file_scalar!("] {
         let mut pos = 0;
         while let Some(idx) = source[pos..].find(pattern) {
             let after_paren = pos + idx + pattern.len();
             let rest = &source[after_paren..];
             let trimmed = rest.trim_start();
 
-            // For query_as!, skip the type argument and comma first.
-            let trimmed = if *pattern == "query_as!(" && !trimmed.starts_with('"') {
+            // For query_as!/query_file_as!, skip the type argument and comma first.
+            let trimmed = if (*pattern == "query_as!(" || *pattern == "query_file_as!(") && !trimmed.starts_with('"') {
                 // Skip to the first comma, then trim again.
                 if let Some(comma_pos) = trimmed.find(',') {
                     trimmed[comma_pos + 1..].trim_start()
