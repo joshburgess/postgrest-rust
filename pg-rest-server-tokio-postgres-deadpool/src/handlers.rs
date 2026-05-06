@@ -346,8 +346,7 @@ async fn execute_wire_with_count(
         let crows = tx.query(&csql.sql, &cparams).await?;
         crows
             .first()
-            .and_then(|r| r.try_get::<_, Option<String>>(0).ok().flatten())
-            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(|r| r.try_get::<_, Option<i64>>(0).ok().flatten())
     } else {
         None
     };
@@ -469,7 +468,7 @@ pub async fn handle_read(
     let (json, total) = execute_wire_with_count(
         &state.pool,
         &claims,
-        &state.config.database.anon_role,
+        &state.anon_setup_sql,
         &sql,
         count_sql.as_ref(),
     )

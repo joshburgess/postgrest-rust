@@ -211,7 +211,7 @@ pg-rest-server is designed as a drop-in replacement. To migrate:
    cargo run -p compat-test
    ```
 
-   The pg-wired and resolute backends currently pass 1013/1013 cases against the reference PostgREST. The deadpool backend uses the same query/schema layers and the same HTTP surface, so it is expected to pass the same set; it has not been swept end-to-end as part of release validation yet.
+   All three backends currently pass 1013/1013 cases against the reference PostgREST.
 
 ## Architecture
 
@@ -241,7 +241,7 @@ pg-rest-server-resolute (bin)
                ↳ URL parser + SQL builder
 ```
 
-The pg-wired and resolute backends both pass 1013/1013 of the PostgREST compatibility suite. They sit at roughly the same throughput ceiling (see [PERFORMANCE.md](PERFORMANCE.md)) because they share the same `pg-wired::AsyncPool` primitive on the hot path. The deadpool variant is the no-pg-wired baseline; it ceilings lower on per-request transactions because each request needs exclusive use of a connection rather than pipelining onto one.
+All three backends pass 1013/1013 of the PostgREST compatibility suite. The pg-wired and resolute variants sit at roughly the same throughput ceiling (see [PERFORMANCE.md](PERFORMANCE.md)) because they share the same `pg-wired::AsyncPool` primitive on the hot path. The deadpool variant is the no-pg-wired baseline; it ceilings lower on per-request transactions because each request needs exclusive use of a connection rather than pipelining onto one.
 
 ## Development
 
