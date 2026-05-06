@@ -231,11 +231,14 @@ pg-rest-server-resolute (bin)
       for the pipelined hot path; zero tokio-postgres dependency.
 
        │                                                          │
-       ├── pg-schema-cache (lib) ─────────────── used by pg-wired/deadpool
-       │       ↳ tokio-postgres                                    │
+       ├── pg-schema-cache-types (lib) ←──── re-exported by both ──┤
+       │       ↳ driver-agnostic structs                           │
+       │                                                           │
+       ├── pg-schema-cache-tokio-postgres (lib) ─ pg-wired/deadpool│
+       │       ↳ tokio-postgres introspection + LISTEN/NOTIFY      │
        │                                                           │
        ├── pg-schema-cache-resolute (lib) ───── used by resolute   │
-       │       ↳ resolute                                          │
+       │       ↳ resolute introspection + PgListener               │
        │                                                           │
        └── pg-query-engine (lib) ←─────── shared by all three ─────┘
                ↳ URL parser + SQL builder

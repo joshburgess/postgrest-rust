@@ -48,7 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         conn.await.ok();
     });
-    let cache = pg_schema_cache::build_schema_cache(&client, &config.database.schemas).await?;
+    let cache =
+        pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas)
+            .await?;
     drop(client);
     tracing::info!(
         "Schema cache loaded: {} tables, {} functions",
@@ -159,7 +161,7 @@ async fn schema_listener_loop(state: Arc<AppState>) {
 async fn run_schema_listener(
     uri: &str,
     schemas: &[String],
-    tx: &watch::Sender<Arc<pg_schema_cache::SchemaCache>>,
+    tx: &watch::Sender<Arc<pg_schema_cache_tokio_postgres::SchemaCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (client, mut connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
 
@@ -187,7 +189,7 @@ async fn run_schema_listener(
     while let Some(notification) = notify_rx.recv().await {
         if notification.channel() == "pgrst" {
             tracing::info!("Schema reload notification received");
-            match pg_schema_cache::build_schema_cache(&client, schemas).await {
+            match pg_schema_cache_tokio_postgres::build_schema_cache(&client, schemas).await {
                 Ok(cache) => {
                     tx.send(Arc::new(cache)).ok();
                     tracing::info!("Schema cache reloaded via NOTIFY");

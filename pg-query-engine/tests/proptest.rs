@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use pg_query_engine::*;
-use pg_schema_cache::*;
+use pg_schema_cache_types::*;
 use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------

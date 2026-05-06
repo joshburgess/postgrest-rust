@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use tokio_postgres::Client;
 
+use pg_schema_cache_types::*;
+
 use crate::error::SchemaCacheError;
-use crate::types::*;
 
 // ---------------------------------------------------------------------------
 // SQL queries

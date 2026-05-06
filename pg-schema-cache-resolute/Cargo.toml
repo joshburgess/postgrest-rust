@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pg-schema-cache = { path = "../pg-schema-cache" }
+pg-schema-cache-types = { path = "../pg-schema-cache-types" }
 resolute = { workspace = true }
 resolute-derive = { workspace = true }
 tokio = { version = "1", features = ["sync", "rt"] }

@@ -1,9 +1,10 @@
 [package]
-name = "pg-schema-cache"
+name = "pg-schema-cache-tokio-postgres"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+pg-schema-cache-types = { path = "../pg-schema-cache-types" }
 tokio = { version = "1", features = ["sync", "rt"] }
 tokio-postgres = "0.7"
 tracing = "0.1"

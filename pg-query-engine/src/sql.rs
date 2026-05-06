@@ -1,4 +1,4 @@
-use pg_schema_cache::{QualifiedName, RelType, Relationship, SchemaCache, Table};
+use pg_schema_cache_types::{QualifiedName, RelType, Relationship, SchemaCache, Table};
 
 use crate::ast::*;
 use crate::error::QueryEngineError;
@@ -212,7 +212,7 @@ impl<'a> SqlBuilder<'a> {
             .find(|r| {
                 r.from_table == *parent_qn
                     && r.to_table == target_qn
-                    && r.rel_type == pg_schema_cache::RelType::ManyToOne
+                    && r.rel_type == pg_schema_cache_types::RelType::ManyToOne
             })
             .ok_or_else(|| {
                 QueryEngineError::NoRelationship(parent_qn.clone(), target_name.to_string())
@@ -1059,7 +1059,7 @@ fn fts_expr(col: &str, tsquery_fn: &str, lang: Option<&str>, param: &str) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pg_schema_cache::*;
+    use pg_schema_cache_types::*;
     use std::collections::HashMap;
 
     fn test_cache() -> SchemaCache {

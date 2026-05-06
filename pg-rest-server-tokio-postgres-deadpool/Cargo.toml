@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # Internal crates
-pg-schema-cache = { path = "../pg-schema-cache" }
+pg-schema-cache-tokio-postgres = { path = "../pg-schema-cache-tokio-postgres" }
 pg-query-engine = { path = "../pg-query-engine" }
 
 # Async runtime

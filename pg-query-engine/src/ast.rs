@@ -1,4 +1,4 @@
-use pg_schema_cache::QualifiedName;
+use pg_schema_cache_types::QualifiedName;
 
 #[derive(Debug, Clone)]
 pub enum ApiRequest {

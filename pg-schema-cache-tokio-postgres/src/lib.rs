@@ -1,11 +1,10 @@
 mod error;
 mod introspection;
 mod listener;
-mod types;
 
 pub use error::SchemaCacheError;
 pub use listener::start_schema_listener;
-pub use types::*;
+pub use pg_schema_cache_types::*;
 
 use tokio_postgres::Client;
 
