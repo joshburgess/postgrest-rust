@@ -4,11 +4,11 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::sync::watch;
 
-use pg_rest_server_tokio_postgres::config::AppConfig;
-use pg_rest_server_tokio_postgres::state::AppState;
+use pg_rest_server_tokio_postgres_deadpool::config::AppConfig;
+use pg_rest_server_tokio_postgres_deadpool::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "pg-rest-server-tokio-postgres", about = "Automatic REST API for PostgreSQL")]
+#[command(name = "pg-rest-server-tokio-postgres-deadpool", about = "Automatic REST API for PostgreSQL")]
 struct Cli {
     /// Path to TOML config file
     #[arg(long, default_value = "pg-rest.toml")]
@@ -34,9 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
-    // 3. Parse PG URI for pg-wired pools.
-    let (user, password, host, port, database) = parse_pg_uri(&config.database.uri);
-    let wire_addr = format!("{host}:{port}");
+    // 3. (deadpool experiment) — no separate URI parsing needed; deadpool
+    //    consumes a `tokio_postgres::Config` parsed straight from the URI.
 
     // 4. Build initial schema cache using a one-off tokio-postgres connection.
     tracing::info!("Loading schema cache…");
@@ -64,40 +63,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         v
     };
 
-    // 7. Create pg-wired pools.
-    // ConnPool: checkout/checkin pool for cold-path operations (EXPLAIN, health check).
-    let conn_pool = {
-        let mut cfg = pg_pool::ConnPoolConfig::default();
-        cfg.addr = wire_addr.clone();
-        cfg.user = user.clone();
-        cfg.password = password.clone();
-        cfg.database = database.clone();
-        cfg.min_idle = 1;
-        cfg.max_size = config.database.pool_size.max(2);
-        pg_pool::ConnPool::<pg_pool::wire::WirePoolable>::new(
-            cfg,
-            pg_pool::LifecycleHooks::default(),
-        )
-        .await
-        .map_err(|e| format!("ConnPool init failed: {e}"))?
+    // 7. Create deadpool-postgres pool (experiment baseline, replaces both
+    //    `pg-pool::ConnPool` and `pg-wired::AsyncPool`).
+    let pool = {
+        let pg_cfg: tokio_postgres::Config = config
+            .database
+            .uri
+            .parse()
+            .map_err(|e| format!("invalid postgres URI: {e}"))?;
+        let mgr = deadpool_postgres::Manager::from_config(
+            pg_cfg,
+            tokio_postgres::NoTls,
+            deadpool_postgres::ManagerConfig {
+                recycling_method: deadpool_postgres::RecyclingMethod::Fast,
+            },
+        );
+        deadpool_postgres::Pool::builder(mgr)
+            .max_size(config.database.pool_size.max(2))
+            .build()
+            .map_err(|e| format!("deadpool init failed: {e}"))?
     };
     tracing::info!(
-        "ConnPool created (max_size={})",
+        "deadpool-postgres pool created (max_size={})",
         config.database.pool_size.max(2)
     );
-
-    // AsyncPool: multiplexed connections for the hot path (pipelined binary protocol).
-    let async_pool_size = config.database.pool_size.min(8); // cap at 8 PG backends
-    let async_pool =
-        pg_wired::AsyncPool::connect(&wire_addr, &user, &password, &database, async_pool_size)
-            .await?;
-    tracing::info!("AsyncPool created with {} connections", async_pool_size);
 
     // 8. Build application state + router.
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let state = Arc::new(AppState {
-        conn_pool,
-        async_pool,
+        pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),
@@ -108,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config,
         jwt_decoding_key,
         jwt_validation,
-        jwt_cache: pg_rest_server_tokio_postgres::auth::JwtCache::new(),
+        jwt_cache: pg_rest_server_tokio_postgres_deadpool::auth::JwtCache::new(),
     });
 
     // Build initial OpenAPI cache.
@@ -117,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         *state.openapi_cache.write().await = specs;
     }
 
-    let app = pg_rest_server_tokio_postgres::build_router(state.clone());
+    let app = pg_rest_server_tokio_postgres_deadpool::build_router(state.clone());
 
     // 8. Spawn reconnecting schema listener.
     tokio::spawn(schema_listener_loop(state));
@@ -204,20 +198,3 @@ async fn shutdown_signal() {
     tracing::info!("Shutdown signal received");
 }
 
-/// Parse a postgres:// URI into (user, password, host, port, database).
-fn parse_pg_uri(uri: &str) -> (String, String, String, u16, String) {
-    // postgres://user:password@host:port/database
-    let rest = uri.strip_prefix("postgres://").unwrap_or(uri);
-    let (auth, hostdb) = rest.split_once('@').unwrap_or(("postgres:postgres", rest));
-    let (user, password) = auth.split_once(':').unwrap_or((auth, ""));
-    let (hostport, database) = hostdb.split_once('/').unwrap_or((hostdb, "postgres"));
-    let (host, port_str) = hostport.split_once(':').unwrap_or((hostport, "5432"));
-    let port: u16 = port_str.parse().unwrap_or(5432);
-    (
-        user.to_string(),
-        password.to_string(),
-        host.to_string(),
-        port,
-        database.to_string(),
-    )
-}

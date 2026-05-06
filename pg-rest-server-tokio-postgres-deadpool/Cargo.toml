@@ -1,5 +1,5 @@
 [package]
-name = "pg-rest-server-tokio-postgres"
+name = "pg-rest-server-tokio-postgres-deadpool"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,11 +7,12 @@ edition = "2021"
 # Internal crates
 pg-schema-cache-tokio-postgres = { path = "../pg-schema-cache-tokio-postgres" }
 pg-query-engine = { path = "../pg-query-engine" }
-pg-wired = { workspace = true }
-pg-pool = { workspace = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# Connection pool: deadpool baseline (no pg-wired in the data path).
+deadpool-postgres = "0.14"
 
 # Web framework + middleware
 axum = { version = "0.8", features = ["ws"] }

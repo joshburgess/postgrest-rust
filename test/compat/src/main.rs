@@ -5,10 +5,10 @@
 //!
 //! Usage:
 //!   cd test/compat && docker compose up -d
-//!   cargo run -p pg-rest-server-tokio-postgres --release -- --config test/compat/pg-rest-compat.toml &
+//!   cargo run -p pg-rest-server-tokio-postgres-pg-wired --release -- --config test/compat/pg-rest-compat.toml &
 //!   cargo run -p compat-test
 //!
-//! Swap `pg-rest-server-tokio-postgres` for `pg-rest-server-resolute` to run
+//! Swap `pg-rest-server-tokio-postgres-pg-wired` for `pg-rest-server-resolute` to run
 //! the suite against the resolute-backed implementation instead.
 
 mod cases;

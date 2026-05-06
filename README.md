@@ -28,12 +28,31 @@ docker run -v $(pwd)/pg-rest.toml:/etc/pg-rest/pg-rest.toml \
 
 ### From source
 
-```bash
-# Install the tokio-postgres-backed server (default).
-cargo install --path pg-rest-server-tokio-postgres
-pg-rest-server-tokio-postgres --config pg-rest.toml
+The workspace ships three interchangeable server binaries. They share the URL parser, SQL builder, schema cache, and HTTP layer; they differ only in the database driver on the data path.
 
-# Or install the resolute-backed server (pure-Rust wire protocol stack).
+```bash
+# Pick one. All three accept the same `pg-rest.toml` and pass the full
+# PostgREST compatibility suite.
+
+# 1. tokio-postgres + pg-wired (default).
+#    `tokio-postgres` for setup and LISTEN/NOTIFY; `pg-wired::AsyncPool`
+#    pipelines the request hot path on a fixed set of multiplexed connections.
+cargo install --path pg-rest-server-tokio-postgres-pg-wired
+pg-rest-server-tokio-postgres-pg-wired --config pg-rest.toml
+
+# 2. tokio-postgres + deadpool (no pg-wired anywhere).
+#    Pure tokio-postgres on the data path, with a deadpool checkout-style
+#    pool. Each request gets exclusive use of one connection for its
+#    transaction. Slower than the pg-wired or resolute variants, but the
+#    smallest dependency footprint and the most familiar setup if you already
+#    use deadpool.
+cargo install --path pg-rest-server-tokio-postgres-deadpool
+pg-rest-server-tokio-postgres-deadpool --config pg-rest.toml
+
+# 3. resolute (zero tokio-postgres).
+#    Pure-Rust wire protocol stack via `resolute::SharedPool`, which is
+#    backed by `pg-wired::AsyncPool`. Same hot-path strategy as variant 1,
+#    surfaced through resolute's typed query API.
 cargo install --path pg-rest-server-resolute
 pg-rest-server-resolute --config pg-rest.toml
 ```
@@ -172,38 +191,57 @@ pg-rest-server is designed as a drop-in replacement. To migrate:
    cd test/compat && docker compose up -d
    ```
 
-   Then bring up one of the two pg-rest-server backends on port 3101 and run the suite. The two backends use the same `test/compat/pg-rest-compat.toml` config:
+   Then bring up one of the three backends on port 3101 and run the suite. They all use the same `test/compat/pg-rest-compat.toml` config:
 
    ```bash
-   # Option A: tokio-postgres backend
-   cargo run -p pg-rest-server-tokio-postgres --release -- --config test/compat/pg-rest-compat.toml &
+   # Option A: tokio-postgres + pg-wired
+   cargo run -p pg-rest-server-tokio-postgres-pg-wired --release -- --config test/compat/pg-rest-compat.toml &
    cargo run -p compat-test
    ```
 
    ```bash
-   # Option B: resolute backend (zero tokio-postgres, pure-Rust wire stack)
+   # Option B: tokio-postgres + deadpool (pure tokio-postgres data path)
+   cargo run -p pg-rest-server-tokio-postgres-deadpool --release -- --config test/compat/pg-rest-compat.toml &
+   cargo run -p compat-test
+   ```
+
+   ```bash
+   # Option C: resolute backend (zero tokio-postgres, pure-Rust wire stack)
    cargo run -p pg-rest-server-resolute --release -- --config test/compat/pg-rest-compat.toml &
    cargo run -p compat-test
    ```
 
-   Both backends currently pass 1013/1013 cases against the reference PostgREST.
+   The pg-wired and resolute backends currently pass 1013/1013 cases against the reference PostgREST. The deadpool backend uses the same query/schema layers and the same HTTP surface, so it is expected to pass the same set; it has not been swept end-to-end as part of release validation yet.
 
 ## Architecture
 
-There are two interchangeable server implementations sharing the same query/schema layers:
+Three interchangeable server binaries share the same URL parser, SQL builder, schema cache, and HTTP layer. They differ only in the database driver on the data path:
 
 ```
-pg-rest-server-tokio-postgres (bin)        pg-rest-server-resolute (bin)
-    │  ↳ tokio-postgres + pg-wired             ↳ resolute (pure-Rust wire stack)
-    │                                          │
-    ├── pg-schema-cache-tokio-postgres (lib)   ├── pg-schema-cache-resolute (lib)
-    │       ↳ tokio-postgres                   │       ↳ resolute
-    │                                          │
-    └── pg-query-engine (lib) ←────────────────┘
-            ↳ URL parser + SQL builder
+pg-rest-server-tokio-postgres-pg-wired (bin)
+    ↳ tokio-postgres for setup/LISTEN-NOTIFY; pg-wired::AsyncPool for
+      pipelined, multiplexed request execution
+
+pg-rest-server-tokio-postgres-deadpool (bin)
+    ↳ tokio-postgres everywhere; deadpool-postgres for connection
+      management. No pg-wired, no pg-pool.
+
+pg-rest-server-resolute (bin)
+    ↳ resolute::SharedPool (which itself wraps pg-wired::AsyncPool)
+      for the pipelined hot path; zero tokio-postgres dependency.
+
+       │                                                          │
+       ├── pg-schema-cache-tokio-postgres (lib) ─── used by pg-wired/deadpool
+       │       ↳ tokio-postgres                                    │
+       │                                                           │
+       ├── pg-schema-cache-resolute (lib) ───── used by resolute   │
+       │       ↳ resolute                                          │
+       │                                                           │
+       └── pg-query-engine (lib) ←─────── shared by all three ─────┘
+               ↳ URL parser + SQL builder
 ```
 
-Both binaries pass the full PostgREST compatibility suite (1013/1013).
+The pg-wired and resolute backends both pass 1013/1013 of the PostgREST compatibility suite. They sit at roughly the same throughput ceiling (see [PERFORMANCE.md](PERFORMANCE.md)) because they share the same `pg-wired::AsyncPool` primitive on the hot path. The deadpool variant is the no-pg-wired baseline; it ceilings lower on per-request transactions because each request needs exclusive use of a connection rather than pipelining onto one.
 
 ## Development
 
@@ -215,11 +253,16 @@ docker compose up -d
 cargo test
 
 # Run compatibility tests against PostgREST. Start the reference stack once,
-# then run the suite against either backend (or both, in turn) on port 3101.
+# then run the suite against any of the three backends in turn on port 3101.
 cd test/compat && docker compose up -d
 
-# tokio-postgres backend
-cargo run -p pg-rest-server-tokio-postgres --release -- --config test/compat/pg-rest-compat.toml &
+# tokio-postgres + pg-wired backend
+cargo run -p pg-rest-server-tokio-postgres-pg-wired --release -- --config test/compat/pg-rest-compat.toml &
+cargo run -p compat-test
+kill %1
+
+# tokio-postgres + deadpool backend
+cargo run -p pg-rest-server-tokio-postgres-deadpool --release -- --config test/compat/pg-rest-compat.toml &
 cargo run -p compat-test
 kill %1
 
@@ -229,7 +272,7 @@ cargo run -p compat-test
 kill %1
 
 # Benchmarks
-cargo run -p pg-rest-server-tokio-postgres --release -- --config test/fixtures/test-config.toml &
+cargo run -p pg-rest-server-tokio-postgres-pg-wired --release -- --config test/fixtures/test-config.toml &
 k6 run bench/k6.js
 ```
 

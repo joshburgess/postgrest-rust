@@ -2,6 +2,13 @@
 
 ## Design Document — March 2026
 
+> **Note (May 2026):** This document captures the original plan. The shipped implementation diverged in the database layer: the workspace now ships three interchangeable server binaries that share the URL parser, SQL builder, schema cache, and HTTP layer, and differ only in the data-path driver:
+> - `pg-rest-server-tokio-postgres-pg-wired` — tokio-postgres for setup + LISTEN/NOTIFY, `pg-wired::AsyncPool` on the request hot path (default).
+> - `pg-rest-server-tokio-postgres-deadpool` — pure tokio-postgres + deadpool-postgres on the data path. Closest to this document's original "tokio-postgres + deadpool" plan.
+> - `pg-rest-server-resolute` — pure-Rust wire stack via the `resolute` ecosystem; zero tokio-postgres.
+>
+> See `README.md`, `PERFORMANCE.md`, and `CLAUDE.md` for the current architecture. The tokio-postgres / deadpool / SQLx discussion below reflects the original design and is preserved as historical context.
+
 ---
 
 ## 1. Introduction

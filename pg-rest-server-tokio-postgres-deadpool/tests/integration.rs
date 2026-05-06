@@ -4,7 +4,7 @@
 //!   docker compose up -d
 //!
 //! Run with:
-//!   cargo test -p pg-rest-server-tokio-postgres --test integration
+//!   cargo test -p pg-rest-server-tokio-postgres-deadpool --test integration
 
 use std::sync::Arc;
 
@@ -14,8 +14,8 @@ use http_body_util::BodyExt;
 use tokio::sync::watch;
 use tower::ServiceExt; // for oneshot
 
-use pg_rest_server_tokio_postgres::config::AppConfig;
-use pg_rest_server_tokio_postgres::state::AppState;
+use pg_rest_server_tokio_postgres_deadpool::config::AppConfig;
+use pg_rest_server_tokio_postgres_deadpool::state::AppState;
 
 const DB_URI: &str = "postgres://authenticator:authenticator@localhost:54322/postgrest_test";
 const JWT_SECRET: &str = "reallyreallyreallyreallyverysafe";
@@ -26,15 +26,15 @@ const JWT_SECRET: &str = "reallyreallyreallyreallyverysafe";
 
 async fn setup() -> axum::Router {
     let config = AppConfig {
-        database: pg_rest_server_tokio_postgres::config::DatabaseConfig {
+        database: pg_rest_server_tokio_postgres_deadpool::config::DatabaseConfig {
             uri: DB_URI.to_string(),
             schemas: vec!["api".to_string()],
             anon_role: "web_anon".to_string(),
             pool_size: 5,
             prepared_statements: true,
         },
-        server: pg_rest_server_tokio_postgres::config::ServerConfig::default(),
-        jwt: pg_rest_server_tokio_postgres::config::JwtConfig {
+        server: pg_rest_server_tokio_postgres_deadpool::config::ServerConfig::default(),
+        jwt: pg_rest_server_tokio_postgres_deadpool::config::JwtConfig {
             secret: JWT_SECRET.to_string(),
         },
     };
@@ -57,40 +57,28 @@ async fn setup() -> axum::Router {
     let mut jwt_validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
     jwt_validation.required_spec_claims = Default::default();
 
-    let mut pool_cfg = pg_pool::ConnPoolConfig::default();
-    pool_cfg.addr = "127.0.0.1:54322".to_string();
-    pool_cfg.user = "authenticator".to_string();
-    pool_cfg.password = "authenticator".to_string();
-    pool_cfg.database = "postgrest_test".to_string();
-    pool_cfg.min_idle = 1;
-    pool_cfg.max_size = 5;
-    let conn_pool = pg_pool::ConnPool::<pg_pool::wire::WirePoolable>::new(
-        pool_cfg,
-        pg_pool::LifecycleHooks::default(),
-    )
-    .await
-    .unwrap();
-
-    let async_pool = pg_wired::AsyncPool::connect(
-        "127.0.0.1:54322",
-        "authenticator",
-        "authenticator",
-        "postgrest_test",
-        4,
-    )
-    .await
-    .unwrap();
+    let pg_cfg: tokio_postgres::Config = config.database.uri.parse().unwrap();
+    let mgr = deadpool_postgres::Manager::from_config(
+        pg_cfg,
+        tokio_postgres::NoTls,
+        deadpool_postgres::ManagerConfig {
+            recycling_method: deadpool_postgres::RecyclingMethod::Fast,
+        },
+    );
+    let pool = deadpool_postgres::Pool::builder(mgr)
+        .max_size(config.database.pool_size.max(2))
+        .build()
+        .unwrap();
 
     let state = Arc::new(AppState {
-        conn_pool,
-        async_pool,
+        pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),
         config,
         jwt_decoding_key,
         jwt_validation,
-        jwt_cache: pg_rest_server_tokio_postgres::auth::JwtCache::new(),
+        jwt_cache: pg_rest_server_tokio_postgres_deadpool::auth::JwtCache::new(),
         anon_setup_sql: "BEGIN; SET LOCAL ROLE \"web_anon\"".to_string(),
     });
 
@@ -100,7 +88,7 @@ async fn setup() -> axum::Router {
         *state.openapi_cache.write().await = specs;
     }
 
-    pg_rest_server_tokio_postgres::build_router(state)
+    pg_rest_server_tokio_postgres_deadpool::build_router(state)
 }
 
 fn make_jwt(role: &str) -> String {

@@ -1,0 +1,49 @@
+[package]
+name = "pg-rest-server-tokio-postgres-pg-wired"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Internal crates
+pg-schema-cache-tokio-postgres = { path = "../pg-schema-cache-tokio-postgres" }
+pg-query-engine = { path = "../pg-query-engine" }
+pg-wired = { workspace = true }
+pg-pool = { workspace = true }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework + middleware
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
+
+# Database
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+tokio-postgres-rustls = { version = "0.12", optional = true }
+rustls = { version = "0.23", optional = true }
+webpki-roots = { version = "0.26", optional = true }
+
+# JWT
+jsonwebtoken = "9"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Config + CLI
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[features]
+default = []
+tls = ["tokio-postgres-rustls", "rustls", "webpki-roots"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+hyper = "1"
