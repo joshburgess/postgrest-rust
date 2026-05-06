@@ -11,7 +11,7 @@ use pg_query_engine::{
     InsertRequest, ReadRequest, SelectItem, SqlOutput, UpdateRequest,
 };
 use pg_schema_cache_resolute::{ReturnType, SchemaCache};
-use resolute::{Client, SqlParam, TypedPool};
+use resolute::{Client, SharedPool};
 
 use crate::auth::{extract_jwt_claims, JwtClaims};
 use crate::error::ApiError;
@@ -249,83 +249,80 @@ fn wants_explain(headers: &HeaderMap) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Execute helpers — runs SQL inside a per-request transaction with role/JWT setup
+// Execute helpers — pipelined per-request transaction with role/JWT setup.
+//
+// Each request's `BEGIN; SET LOCAL ROLE; (set_config); query; COMMIT` is
+// shipped to PostgreSQL as a single coalesced batch via SharedPool. Many
+// concurrent requests fly over each TCP connection at once.
 // ---------------------------------------------------------------------------
 
-/// Build the SET LOCAL ROLE statement for the given (optional) JWT claims.
-/// Returns the statement and an optional JWT raw-claims string to pass via
-/// `set_config('request.jwt.claims', $1, true)`.
-fn role_setup(claims: &Option<JwtClaims>, anon_role_quoted: &str) -> (String, Option<String>) {
-    match claims {
-        Some(c) => {
-            let quoted_role = format!("\"{}\"", c.role.replace('"', "\"\""));
-            (format!("SET LOCAL ROLE {quoted_role}"), Some(c.raw.clone()))
-        }
-        None => (format!("SET LOCAL ROLE {anon_role_quoted}"), None),
-    }
+/// Build the simple-query setup SQL: `BEGIN; SET LOCAL ROLE ...;` plus an
+/// optional `SELECT set_config('request.jwt.claims', '...', true)` when JWT
+/// claims are present. Anon path uses the pre-computed string in AppState.
+fn build_setup_sql(claims: &Option<JwtClaims>, anon_setup_sql: &str) -> String {
+    let Some(claims) = claims else {
+        return anon_setup_sql.to_string();
+    };
+    let quoted_role = format!("\"{}\"", claims.role.replace('"', "\"\""));
+    let escaped = claims.raw.replace('\'', "''");
+    format!(
+        "BEGIN; SET LOCAL ROLE {quoted_role}; \
+         SELECT set_config('request.jwt.claims', '{escaped}', true)"
+    )
 }
 
-/// Decode a single-cell text-format response into UTF-8.
-/// PostgreSQL JSON output is always valid UTF-8.
-fn first_cell_string(rows: &[resolute::Row]) -> Option<String> {
-    let row = rows.first()?;
-    let bytes = row.raw(0)?;
-    Some(String::from_utf8_lossy(bytes).into_owned())
-}
-
-/// Execute the request inside a transaction with role/JWT setup.
+/// Execute the request as a single pipelined batched transaction.
 /// Returns the (JSON body, optional count) tuple.
+///
+/// The count query, when requested, runs as a separate pipelined transaction
+/// so its role/JWT context matches the data query (RLS sees the same rows).
 async fn run_request(
-    pool: &TypedPool,
+    pool: &SharedPool,
     claims: &Option<JwtClaims>,
-    anon_role_quoted: &str,
+    anon_setup_sql: &str,
     sql: &SqlOutput,
     count_sql: Option<&SqlOutput>,
 ) -> Result<(Option<String>, Option<i64>), ApiError> {
-    use resolute::Executor;
+    let setup_sql = build_setup_sql(claims, anon_setup_sql);
 
-    let client = pool.get().await?;
-    let (set_role_sql, jwt_raw) = role_setup(claims, anon_role_quoted);
-    let params: Vec<&dyn SqlParam> = sql.params.iter().map(|s| s as &dyn SqlParam).collect();
-    let cparams: Vec<&dyn SqlParam> = count_sql
-        .map(|csql| csql.params.iter().map(|s| s as &dyn SqlParam).collect())
-        .unwrap_or_default();
+    let param_refs: Vec<Option<&[u8]>> = sql.params.iter().map(|s| Some(s.as_bytes())).collect();
+    let param_oids: Vec<u32> = vec![0; sql.params.len()];
 
-    client
-        .atomic(move |c| {
-            Box::pin(async move {
-                c.execute(&set_role_sql, &[]).await?;
-                if let Some(raw) = &jwt_raw {
-                    c.execute("SELECT set_config('request.jwt.claims', $1, true)", &[raw])
-                        .await?;
-                }
-                let rows = c.query(&sql.sql, &params).await?;
-                let json = first_cell_string(&rows);
-
-                let total = if let Some(csql) = count_sql {
-                    let crows = c.query(&csql.sql, &cparams).await?;
-                    match crows.first() {
-                        Some(r) => Some(r.get::<i64>(0)?),
-                        None => None,
-                    }
-                } else {
-                    None
-                };
-                Ok((json, total))
-            })
-        })
+    let rows = pool
+        .exec_transaction(&setup_sql, &sql.sql, &param_refs, &param_oids)
         .await
-        .map_err(ApiError::from)
+        .map_err(ApiError::from)?;
+    let json = rows
+        .first()
+        .and_then(|r| r.cell(0))
+        .map(|b| String::from_utf8_lossy(b).into_owned());
+
+    let total = if let Some(csql) = count_sql {
+        let cpr: Vec<Option<&[u8]>> = csql.params.iter().map(|s| Some(s.as_bytes())).collect();
+        let co: Vec<u32> = vec![0; csql.params.len()];
+        let crows = pool
+            .exec_transaction(&setup_sql, &csql.sql, &cpr, &co)
+            .await
+            .map_err(ApiError::from)?;
+        crows
+            .first()
+            .and_then(|r| r.cell(0))
+            .and_then(|b| String::from_utf8_lossy(b).parse::<i64>().ok())
+    } else {
+        None
+    };
+
+    Ok((json, total))
 }
 
 /// Execute a request that doesn't need a count.
 async fn run_request_no_count(
-    pool: &TypedPool,
+    pool: &SharedPool,
     claims: &Option<JwtClaims>,
-    anon_role_quoted: &str,
+    anon_setup_sql: &str,
     sql: &SqlOutput,
 ) -> Result<Option<String>, ApiError> {
-    let (json, _) = run_request(pool, claims, anon_role_quoted, sql, None).await?;
+    let (json, _) = run_request(pool, claims, anon_setup_sql, sql, None).await?;
     Ok(json)
 }
 
@@ -396,7 +393,7 @@ pub async fn handle_read(
     if wants_explain(&headers) {
         sql.sql = format!("EXPLAIN (FORMAT JSON) {}", sql.sql);
         let plan_json =
-            run_request_no_count(&state.pool, &claims, &state.anon_role_quoted, &sql).await?;
+            run_request_no_count(&state.pool, &claims, &state.anon_setup_sql, &sql).await?;
         let plan_text = plan_json.unwrap_or_else(|| "[]".to_string());
         let plan: serde_json::Value =
             serde_json::from_str(&plan_text).unwrap_or(serde_json::json!([]));
@@ -421,7 +418,7 @@ pub async fn handle_read(
     let (json, total) = run_request(
         &state.pool,
         &claims,
-        &state.anon_role_quoted,
+        &state.anon_setup_sql,
         &sql,
         count_sql.as_ref(),
     )
@@ -559,7 +556,7 @@ pub async fn handle_insert(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = run_request_no_count(&state.pool, &claims, &state.anon_role_quoted, &sql).await?;
+    let json = run_request_no_count(&state.pool, &claims, &state.anon_setup_sql, &sql).await?;
 
     // Build Location header from PK of the first inserted row.
     let location = json.as_deref().and_then(|body| {
@@ -643,7 +640,7 @@ pub async fn handle_update(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = run_request_no_count(&state.pool, &claims, &state.anon_role_quoted, &sql).await?;
+    let json = run_request_no_count(&state.pool, &claims, &state.anon_setup_sql, &sql).await?;
 
     match json {
         Some(j) => Ok((
@@ -689,7 +686,7 @@ pub async fn handle_delete(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = run_request_no_count(&state.pool, &claims, &state.anon_role_quoted, &sql).await?;
+    let json = run_request_no_count(&state.pool, &claims, &state.anon_setup_sql, &sql).await?;
 
     match json {
         Some(j) => Ok((
@@ -761,7 +758,7 @@ pub async fn handle_rpc(
     });
 
     let sql = build_sql(&cache, &req, schemas)?;
-    let json = run_request_no_count(&state.pool, &claims, &state.anon_role_quoted, &sql).await?;
+    let json = run_request_no_count(&state.pool, &claims, &state.anon_setup_sql, &sql).await?;
 
     // Void functions return 204 No Content (PostgREST compat).
     if matches!(func.return_type, ReturnType::Void) {
@@ -845,44 +842,34 @@ pub async fn handle_live() -> StatusCode {
 }
 
 pub async fn handle_ready(State(state): State<Arc<AppState>>) -> StatusCode {
-    match state.pool.get().await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+    if state.pool.alive_count().await > 0 {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
     }
 }
 
 /// Prometheus-compatible metrics endpoint.
 pub async fn handle_metrics(State(state): State<Arc<AppState>>) -> Response {
-    let pool_metrics = state.pool.metrics();
+    let pool_size = state.pool.size();
+    let pool_alive = state.pool.alive_count().await;
     let cache = state.schema_cache.borrow();
 
     let body = format!(
-        "# HELP pg_rest_pool_size Current pool size\n\
+        "# HELP pg_rest_pool_size Configured pool size\n\
          # TYPE pg_rest_pool_size gauge\n\
          pg_rest_pool_size {}\n\
-         # HELP pg_rest_pool_available Available connections in pool\n\
-         # TYPE pg_rest_pool_available gauge\n\
-         pg_rest_pool_available {}\n\
-         # HELP pg_rest_pool_in_use Connections currently checked out\n\
-         # TYPE pg_rest_pool_in_use gauge\n\
-         pg_rest_pool_in_use {}\n\
-         # HELP pg_rest_pool_checkouts Total checkouts since startup\n\
-         # TYPE pg_rest_pool_checkouts counter\n\
-         pg_rest_pool_checkouts {}\n\
-         # HELP pg_rest_pool_timeouts Total checkout timeouts since startup\n\
-         # TYPE pg_rest_pool_timeouts counter\n\
-         pg_rest_pool_timeouts {}\n\
+         # HELP pg_rest_pool_alive Live connections in the shared pool\n\
+         # TYPE pg_rest_pool_alive gauge\n\
+         pg_rest_pool_alive {}\n\
          # HELP pg_rest_schema_tables Number of tables in schema cache\n\
          # TYPE pg_rest_schema_tables gauge\n\
          pg_rest_schema_tables {}\n\
          # HELP pg_rest_schema_functions Number of functions in schema cache\n\
          # TYPE pg_rest_schema_functions gauge\n\
          pg_rest_schema_functions {}\n",
-        pool_metrics.total,
-        pool_metrics.idle,
-        pool_metrics.in_use,
-        pool_metrics.total_checkouts,
-        pool_metrics.total_timeouts,
+        pool_size,
+        pool_alive,
         cache.tables.len(),
         cache.functions.len(),
     );

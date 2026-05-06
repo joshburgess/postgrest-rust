@@ -2,12 +2,12 @@
 
 Benchmarks comparing both `pg-rest-server` backends (Rust) against the reference PostgREST (Haskell/Hasql) on the same PostgreSQL instance.
 
-The two Rust binaries share the URL parser, schema cache, and HTTP layer but have very different database data paths:
+The two Rust binaries share the URL parser, schema cache, and HTTP layer. They also now share the same data-path strategy: a pipelined, multiplexed connection pool where each TCP connection is driven by a writer/reader split that coalesces concurrent requests into a single `write()` syscall and FIFO-matches responses back. They differ only in which library implements that primitive:
 
-- **`pg-rest-server-tokio-postgres`** uses `pg-wired`'s `AsyncPool` of `AsyncConn`s. Each `AsyncConn` is a single TCP connection with a writer/reader split that coalesces concurrent requests into a single `write()` syscall and FIFO-matches responses. The pool round-robins between N such connections.
-- **`pg-rest-server-resolute`** uses the published `resolute` crate (`TypedPool`). Each request acquires a connection from the pool, runs its `BEGIN; SET LOCAL ROLE; ...; COMMIT` sequence, then returns the connection. Throughput is bounded by `pool_size / round_trip_time`.
+- **`pg-rest-server-tokio-postgres`** uses `pg-wired::AsyncPool` directly. Each request ships its `BEGIN; SET LOCAL ROLE; ...; COMMIT` to one of the round-robin connections in a single pipelined batch.
+- **`pg-rest-server-resolute`** uses `resolute::SharedPool`, which wraps the same `pg-wired::AsyncPool` and exposes it through resolute's typed error and query surface. The hot path is the same single-batch pipelined transaction.
 
-The first design pipelines many concurrent requests over each TCP connection. The second uses one connection at a time per request. Both architectures have their place: pipelining wins for high-concurrency read-mostly workloads; the conventional pool is simpler and gives the user direct control over connection lifecycle (savepoints, multi-statement transactions, COPY).
+Because both binaries land on the same wire pool, throughput is within run-to-run variance across every workload. The original architectural gap (resolute's `ExclusivePool` doing one in-flight request per connection) is gone for the request hot path. `ExclusivePool` is still available in `resolute` for cases that genuinely need exclusive checkout (multi-statement transactions, savepoints, COPY, holding a connection across `await` points), and `pg-rest-server-resolute` reaches for it from background tasks like the schema listener.
 
 ## Test Environment
 
@@ -22,103 +22,94 @@ The first design pipelines many concurrent requests over each TCP connection. Th
 
 ## Results
 
-Each table reports requests per second. `tp/PG` and `rs/PG` are the speedup of the tokio-postgres and resolute backends over PostgREST.
+Each table reports requests per second. `tp/PG` and `rs/PG` are the speedup of the tokio-postgres and resolute backends over PostgREST. PostgREST values are sampled from the run alongside the resolute backend; both Rust backends were benched against the same PostgREST/postgres containers.
 
 ### 1. Simple Read: `/authors` (3 rows, ~150 bytes)
 
 | c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
 |---|---|---|---|---|---|
-| 1   | 2,762  | 4,717   | 1,850 | 1.7x | 0.7x |
-| 5   | 9,165  | 15,154  | 4,399 | 1.7x | 0.5x |
-| 10  | 13,506 | 21,270  | 4,465 | 1.6x | 0.3x |
-| 20  | 6,841  | 24,632  | 4,435 | 3.6x | 0.6x |
-| 50  | 2,369  | 22,984  | 4,301 | 9.7x | 1.8x |
-| 100 | 2,695  | 23,241  | 4,347 | 8.6x | 1.6x |
+| 1   | 2,206  | 4,587  | 4,919  | 2.1x | 2.2x |
+| 5   | 9,110  | 14,827 | 14,839 | 1.6x | 1.6x |
+| 10  | 13,450 | 20,905 | 21,406 | 1.6x | 1.6x |
+| 20  | 7,499  | 23,736 | 24,217 | 3.2x | 3.2x |
+| 50  | 2,390  | 21,934 | 23,434 | 9.2x | 9.8x |
+| 100 | 2,674  | 23,655 | 20,461 | 8.8x | 7.7x |
 
 ### 2. Filtered Read: `/books?pages=gt.300&order=id.asc`
 
 | c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
 |---|---|---|---|---|---|
-| 1   | 2,549  | 4,472  | 1,758 | 1.8x | 0.7x |
-| 5   | 8,235  | 14,064 | 4,280 | 1.7x | 0.5x |
-| 10  | 11,644 | 20,521 | 4,234 | 1.8x | 0.4x |
-| 20  | 8,493  | 20,512 | 4,277 | 2.4x | 0.5x |
-| 50  | 2,528  | 23,741 | 4,326 | 9.4x | 1.7x |
-| 100 | 2,567  | 21,401 | 4,168 | 8.3x | 1.6x |
+| 1   | 686    | 4,460  | 4,460  | 6.5x  | 6.5x  |
+| 5   | 8,209  | 14,413 | 14,555 | 1.8x  | 1.8x  |
+| 10  | 4,324  | 20,488 | 18,279 | 4.7x  | 4.2x  |
+| 20  | 3,181  | 22,921 | 20,302 | 7.2x  | 6.4x  |
+| 50  | 1,730  | 24,544 | 23,237 | 14.2x | 13.4x |
+| 100 | 3,130  | 22,217 | 20,722 | 7.1x  | 6.6x  |
 
 ### 3. Embedding: `/authors?select=name,books(title)&id=eq.1`
 
 | c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
 |---|---|---|---|---|---|
-| 1   | 1,183 | 4,098  | 1,637 | 3.5x  | 1.4x |
-| 5   | 2,250 | 13,389 | 3,856 | 5.9x  | 1.7x |
-| 10  | 1,477 | 18,742 | 3,467 | 12.7x | 2.3x |
-| 20  | 2,160 | 20,345 | 3,868 | 9.4x  | 1.8x |
-| 50  | 1,179 | 21,864 | 3,857 | 18.5x | 3.3x |
-| 100 | 2,460 | 21,845 | 3,959 | 8.9x  | 1.6x |
+| 1   | 1,539 | 4,246  | 4,218  | 2.8x  | 2.7x  |
+| 5   | 7,792 | 12,766 | 13,141 | 1.6x  | 1.7x  |
+| 10  | 4,000 | 18,385 | 18,084 | 4.6x  | 4.5x  |
+| 20  | 3,203 | 20,213 | 20,415 | 6.3x  | 6.4x  |
+| 50  | 1,794 | 22,872 | 21,585 | 12.7x | 12.0x |
+| 100 | 2,538 | 21,808 | 19,731 | 8.6x  | 7.8x  |
 
 ### 4. Large Result: `/numbered` (100 rows, ~2 KB)
 
 | c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
 |---|---|---|---|---|---|
-| 1   | 1,369  | 4,013  | 1,713 | 2.9x  | 1.3x |
-| 5   | 8,080  | 13,172 | 4,134 | 1.6x  | 0.5x |
-| 10  | 11,666 | 19,319 | 4,198 | 1.7x  | 0.4x |
-| 20  | 2,761  | 18,781 | 4,140 | 6.8x  | 1.5x |
-| 50  | 1,237  | 20,093 | 4,252 | 16.2x | 3.4x |
-| 100 | 5,655  | 21,563 | 4,209 | 3.8x  | 0.7x |
+| 1   | 1,378  | 3,942  | 4,161  | 2.9x  | 3.0x  |
+| 5   | 2,803  | 11,876 | 11,815 | 4.2x  | 4.2x  |
+| 10  | 12,773 | 19,110 | 19,266 | 1.5x  | 1.5x  |
+| 20  | 2,400  | 17,837 | 17,480 | 7.4x  | 7.3x  |
+| 50  | 1,926  | 18,234 | 20,767 | 9.5x  | 10.8x |
+| 100 | 2,979  | 18,136 | 20,168 | 6.1x  | 6.8x  |
 
 ### 5. Anonymous (no JWT): `/authors`
 
 | c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
 |---|---|---|---|---|---|
-| 1   | 2,689  | 4,099  | 2,243 | 1.5x | 0.8x |
-| 5   | 8,828  | 13,008 | 5,291 | 1.5x | 0.6x |
-| 10  | 12,309 | 18,673 | 5,180 | 1.5x | 0.4x |
-| 20  | 3,776  | 19,400 | 5,221 | 5.1x | 1.4x |
-| 50  | 2,830  | 20,730 | 5,197 | 7.3x | 1.8x |
-| 100 | 2,991  | 21,214 | 5,210 | 7.1x | 1.7x |
+| 1   | 2,772  | 4,148  | 4,802  | 1.5x | 1.7x |
+| 5   | 8,753  | 12,175 | 15,378 | 1.4x | 1.8x |
+| 10  | 12,501 | 17,360 | 21,284 | 1.4x | 1.7x |
+| 20  | 4,022  | 21,071 | 22,057 | 5.2x | 5.5x |
+| 50  | 2,708  | 22,117 | 22,929 | 8.2x | 8.5x |
+| 100 | 4,745  | 21,558 | 21,761 | 4.5x | 4.6x |
 
 ### 6. RPC: `/rpc/add?a=3&b=4` (scalar function)
 
 | c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
 |---|---|---|---|---|---|
-| 1   | 836   | 4,727  | 1,873 | 5.7x  | 2.2x |
-| 5   | 3,470 | 14,171 | 4,588 | 4.1x  | 1.3x |
-| 10  | 3,374 | 19,304 | 4,532 | 5.7x  | 1.3x |
-| 20  | 3,069 | 23,692 | 4,540 | 7.7x  | 1.5x |
-| 50  | 1,955 | 23,333 | 4,563 | 11.9x | 2.3x |
-| 100 | 3,747 | 22,640 | 4,513 | 6.0x  | 1.2x |
+| 1   | 1,690 | 4,779  | 4,699  | 2.8x  | 2.8x |
+| 5   | 3,519 | 14,757 | 13,804 | 4.2x  | 3.9x |
+| 10  | 3,797 | 21,194 | 18,734 | 5.6x  | 4.9x |
+| 20  | 7,335 | 22,366 | 24,493 | 3.0x  | 3.3x |
+| 50  | 2,679 | 26,821 | 23,570 | 10.0x | 8.8x |
+| 100 | 2,895 | 23,093 | 24,170 | 8.0x  | 8.3x |
 
 ## Observations
 
-1. **The tokio-postgres backend dominates at high concurrency.** It maintains 20-24K rps from c=10 through c=100 across every workload. Coalescing concurrent requests onto a small number of TCP connections lets a single TCP write carry many `Bind`/`Execute` messages, and the reader task FIFO-matches responses back. At c=100 it is 6-18x faster than PostgREST.
+1. **Both Rust backends sustain 18-24K rps from c=10 through c=100.** Pipelining many concurrent requests onto four TCP connections lets a single TCP write carry many `Bind`/`Execute` messages, and the reader task FIFO-matches responses back. The bottleneck at high concurrency is the PostgreSQL container, not the Rust process.
 
-2. **The resolute backend plateaus at `pool_size / per-request-transaction-time`.** With four connections and per-request transactions of roughly 0.9 ms, throughput tops out near 4,400 rps. This is the cost of conventional pool semantics: only one in-flight request per connection, four round-trips per request (`BEGIN`, `SET LOCAL ROLE` / `set_config`, query, `COMMIT`). The plateau is flat from c=5 through c=100 because the bottleneck is connection count, not concurrency.
+2. **The two backends are within run-to-run variance of each other.** They use the same `pg-wired::AsyncPool` primitive on the data path. Differences across cells (e.g. resolute leading by 2-4K rps in some rows, tokio-postgres leading by similar margins in others) are dominated by ab/ab-startup jitter and PostgreSQL scheduling, not by anything either backend does differently.
 
-3. **Resolute scales linearly with `pool_size`.** Bumping the same `/authors` workload at c=50 from `pool_size=4` to `pool_size=20` raises throughput from 4,301 to 9,715 rps. Trading connections for throughput is a knob users can turn.
+3. **PostgREST has high variance under load.** Throughput is good at c=5-10 but degrades sharply as concurrency rises (typically 2-3K rps at c=50-100). Some runs show brief peaks at c=10 in the 12-13K rps range; sustained throughput is well below that.
 
-4. **PostgREST has high variance under load.** Throughput is good at c=5-10 but degrades sharply as concurrency rises (typically 2-3K rps at c=50-100). Some runs see brief peaks at c=10 in the 12-13K rps range; sustained throughput is well below that.
+4. **RPC and embedding are the biggest relative wins.** PostgREST's function-call path and nested-select planner are expensive; the Rust SQL builder produces a single correlated-subquery query that PostgreSQL plans well. At c=50, embedding is roughly 12x faster on both backends.
 
-5. **RPC and embedding are the biggest relative wins.** PostgREST's function-call path and nested-select planner are expensive; the Rust SQL builder produces a single correlated-subquery query that PostgreSQL plans well. At c=50, embedding is 18.5x faster on the tokio-postgres backend and 3.3x faster on the resolute backend.
-
-## Pool scaling (resolute)
-
-The same `/authors` workload at c=50, varying `pool_size` for the resolute backend:
-
-| pool_size | rps  |
-|-----------|------|
-| 4         | 4,301 |
-| 20        | 9,715 |
-
-The relationship is roughly linear until the PostgreSQL container becomes CPU-bound. Each additional connection adds another concurrent backend process; in this single-container setup, throughput tops out somewhere around 8-10 connections before contention dominates.
+5. **Pool size is no longer the throughput knob it used to be.** When the resolute backend used `ExclusivePool` (one in-flight request per connection), pool_size set a hard ceiling near `pool_size / per-request-transaction-time`. With `SharedPool`, four connections already saturate this single-container setup; bumping the pool further mostly trades memory for marginal gains until PostgreSQL becomes the bottleneck.
 
 ## Choosing a backend
 
-- **High-concurrency read-mostly REST API**: pick `pg-rest-server-tokio-postgres`. The pipelined data path is hard to beat for this shape of workload.
-- **Mixed transactional workload that benefits from holding connections (multi-statement transactions, savepoints, COPY, listening for NOTIFY in the request lifecycle)**: pick `pg-rest-server-resolute`, and size the pool to match expected concurrency.
+Both backends now hit the same throughput ceiling and pass 1013/1013 in the PostgREST compatibility suite. The choice is about which database driver you want in your dependency tree:
 
-Both pass 1013/1013 in the PostgREST compatibility suite; the choice is operational, not a feature gap.
+- **`pg-rest-server-tokio-postgres`** depends on the long-established `tokio-postgres` ecosystem.
+- **`pg-rest-server-resolute`** depends on the `resolute` family (`pg-wired`, `pg-pool`, `resolute`, `resolute-derive`, `resolute-macros`). All from-scratch pure Rust, with compile-time checked query macros, an `Executor` trait that unifies pool/client/transaction, and named-parameter rewriting.
+
+If you plan to extend the server with custom typed queries against the same database, the resolute backend gives you compile-time validation out of the box. Otherwise pick whichever ecosystem you already know.
 
 ## Reproducing
 

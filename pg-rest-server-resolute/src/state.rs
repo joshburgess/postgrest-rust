@@ -4,12 +4,15 @@ use tokio::sync::watch;
 
 use crate::config::AppConfig;
 use pg_schema_cache_resolute::SchemaCache;
-use resolute::TypedPool;
+use resolute::SharedPool;
 
 pub struct AppState {
-    /// Unified async pool with per-connection statement caching and binary
-    /// wire format. Used for all query execution.
-    pub pool: Arc<TypedPool>,
+    /// Multiplexed shared pool: many concurrent requests share each
+    /// connection's writer task. Used for the request hot path so the
+    /// per-request `BEGIN; SET LOCAL ROLE; ...; COMMIT` ships as a single
+    /// pipelined batch instead of paying per-statement round-trips on a
+    /// held connection.
+    pub pool: Arc<SharedPool>,
     pub schema_cache: watch::Receiver<Arc<SchemaCache>>,
     pub schema_cache_tx: watch::Sender<Arc<SchemaCache>>,
     /// Cached OpenAPI specs: (v2_json, v3_json). Regenerated on schema reload.
@@ -20,6 +23,8 @@ pub struct AppState {
     pub jwt_cache: crate::auth::JwtCache,
     /// Pre-quoted anon role identifier (e.g. `"web_anon"`) for SET LOCAL ROLE.
     pub anon_role_quoted: String,
+    /// Pre-computed anon setup SQL: `BEGIN; SET LOCAL ROLE "web_anon"`.
+    pub anon_setup_sql: String,
 }
 
 impl AppState {

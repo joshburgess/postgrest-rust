@@ -1811,9 +1811,9 @@ dependencies = [
 
 [[package]]
 name = "resolute"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a4de9c5a28c5fc83ee1416aa1305f85f69d0a1075444dacc2d2834de456eb73"
+checksum = "733b9add1ac245f552fab1298afc8da6a26702de79437e1748a668f47747bc34"
 dependencies = [
  "arc-swap",
  "bytes",

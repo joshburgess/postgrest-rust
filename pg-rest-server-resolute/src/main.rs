@@ -8,7 +8,7 @@ use tokio::sync::watch;
 
 use pg_rest_server_resolute::config::AppConfig;
 use pg_rest_server_resolute::state::AppState;
-use resolute::{Client, TypedPool};
+use resolute::{Client, SharedPool};
 
 #[derive(Parser)]
 #[command(
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (user, password, host, port, database) =
         parse_pg_uri_for_pool(&config.database.uri).ok_or("invalid database URI")?;
     let addr = format!("{host}:{port}");
-    let pool = TypedPool::connect(
+    let pool = SharedPool::connect(
         &addr,
         &user,
         &password,
@@ -75,19 +75,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|e| format!("pool init failed: {e}"))?;
     let pool = Arc::new(pool);
     tracing::info!(
-        "TypedPool created (max_size={})",
+        "SharedPool created (size={})",
         config.database.pool_size.max(2)
     );
 
     // 4. Build application state + router.
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let anon_role_quoted = format!("\"{}\"", config.database.anon_role.replace('"', "\"\""));
+    let anon_setup_sql = format!("BEGIN; SET LOCAL ROLE {anon_role_quoted}");
     let state = Arc::new(AppState {
         pool,
         schema_cache: cache_rx,
         schema_cache_tx: cache_tx,
         openapi_cache: tokio::sync::RwLock::new(("".into(), "".into())),
         anon_role_quoted,
+        anon_setup_sql,
         config,
         jwt_decoding_key,
         jwt_validation,
@@ -158,7 +160,7 @@ async fn shutdown_signal() {
     tracing::info!("Shutdown signal received");
 }
 
-/// Parse a postgres:// URI into the components TypedPool::connect expects.
+/// Parse a postgres:// URI into the components SharedPool::connect expects.
 /// Falls back to the `parse_connection_string` helper resolute uses internally.
 fn parse_pg_uri_for_pool(uri: &str) -> Option<(String, String, String, u16, String)> {
     let rest = uri

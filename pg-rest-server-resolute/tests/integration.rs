@@ -52,7 +52,7 @@ async fn setup() -> axum::Router {
     let mut jwt_validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
     jwt_validation.required_spec_claims = Default::default();
 
-    let pool = resolute::TypedPool::connect(
+    let pool = resolute::SharedPool::connect(
         "127.0.0.1:54322",
         "authenticator",
         "authenticator",
@@ -62,6 +62,8 @@ async fn setup() -> axum::Router {
     .await
     .unwrap();
 
+    let anon_role_quoted = "\"web_anon\"".to_string();
+    let anon_setup_sql = format!("BEGIN; SET LOCAL ROLE {anon_role_quoted}");
     let state = Arc::new(AppState {
         pool: Arc::new(pool),
         schema_cache: cache_rx,
@@ -71,7 +73,8 @@ async fn setup() -> axum::Router {
         jwt_decoding_key,
         jwt_validation,
         jwt_cache: pg_rest_server_resolute::auth::JwtCache::new(),
-        anon_role_quoted: "\"web_anon\"".to_string(),
+        anon_role_quoted,
+        anon_setup_sql,
     });
 
     // Build OpenAPI cache.

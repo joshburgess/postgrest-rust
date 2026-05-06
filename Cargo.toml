@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.dependencies]
 pg-wired = "0.2"
 pg-pool = "0.2"
-resolute = "0.2"
+resolute = "0.3"
 resolute-derive = "0.1"
 resolute-macros = "0.1"
 resolute-cli = "0.1"
