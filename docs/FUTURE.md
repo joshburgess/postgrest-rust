@@ -1,6 +1,6 @@
 # Future Plans
 
-Potential features and extensions beyond PostgREST parity. None of these are committed — this is a living document of ideas worth exploring.
+Potential features and extensions beyond PostgREST parity. None of these are committed; this is a living document of ideas worth exploring.
 
 ---
 
@@ -13,7 +13,7 @@ Potential features and extensions beyond PostgREST parity. None of these are com
 Subscribe to a table with filters, receive pushed rows matching the filter when INSERTs/UPDATEs/DELETEs happen. Similar to Supabase Realtime. Would extend the existing `/ws` endpoint beyond raw NOTIFY forwarding.
 
 ### Logical Replication Decoding
-Bypass NOTIFY entirely and consume the PostgreSQL WAL stream for guaranteed delivery of change events. More reliable than trigger-based NOTIFY (no message loss under heavy load), but significantly more complex — requires managing replication slots, decoding the logical replication protocol, and handling slot lifecycle.
+Bypass NOTIFY entirely and consume the PostgreSQL WAL stream for guaranteed delivery of change events. More reliable than trigger-based NOTIFY (no message loss under heavy load), but significantly more complex: requires managing replication slots, decoding the logical replication protocol, and handling slot lifecycle.
 
 ---
 
@@ -30,7 +30,7 @@ Detect materialized views in the schema cache and expose configuration for autom
 ## Query Capabilities
 
 ### Aggregate Endpoints (GROUP BY)
-`GET /items?select=category,count()&group_by=category` — PostgREST doesn't support GROUP BY. Would enable sum, avg, min, max, count, and array_agg without requiring views or functions for simple aggregations.
+`GET /items?select=category,count()&group_by=category`. PostgREST doesn't support GROUP BY. Would enable sum, avg, min, max, count, and array_agg without requiring views or functions for simple aggregations.
 
 ### Computed / Virtual Columns
 Expose SQL expressions as columns in the API without requiring views. Configured per-table, evaluated server-side. Example: a `full_name` column computed from `first_name || ' ' || last_name`.
@@ -59,7 +59,7 @@ Automatic `SET LOCAL` of a tenant ID GUC extracted from the JWT, enabling row-le
 ## Developer Experience
 
 ### GraphQL Endpoint
-Auto-generated GraphQL schema from the same schema cache that powers the REST API. Additive — doesn't replace REST. Would support queries, mutations, and subscriptions (if streaming is implemented). The schema cache already contains the type and relationship information needed.
+Auto-generated GraphQL schema from the same schema cache that powers the REST API. Additive, doesn't replace REST. Would support queries, mutations, and subscriptions (if streaming is implemented). The schema cache already contains the type and relationship information needed.
 
 ### Client SDK Generation
 Serve a generated TypeScript (or other language) client SDK directly from the API, derived from the OpenAPI spec. Alternatively, provide a CLI command that generates a typed client from the running server's OpenAPI endpoint.

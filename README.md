@@ -1,6 +1,6 @@
 # pg-rest-server
 
-A high-performance PostgREST alternative written in Rust. Automatically generates a full REST API from any PostgreSQL database — no application code required.
+A high-performance PostgREST alternative written in Rust. Automatically generates a full REST API from any PostgreSQL database, no application code required.
 
 ## Quickstart
 
@@ -174,7 +174,7 @@ pg-rest-server is designed as a drop-in replacement. To migrate:
    | `PGRST_JWT_SECRET` | `jwt.secret` |
    | `PGRST_SERVER_PORT` | `server.port` |
 
-2. **URL syntax**: All PostgREST URL syntax is supported — filters, select, order, embedding, RPC calls work identically.
+2. **URL syntax**: All PostgREST URL syntax is supported (filters, select, order, embedding, RPC calls work identically).
 
 3. **Headers**: `Prefer`, `Range`, `Accept`, `Authorization`, `Accept-Profile`, `Content-Profile` headers work the same way.
 

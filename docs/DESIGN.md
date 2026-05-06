@@ -1,11 +1,11 @@
 # Building a PostgREST Alternative in Rust
 
-## Design Document — March 2026
+## Design Document: March 2026
 
 > **Note (May 2026):** This document captures the original plan. The shipped implementation diverged in the database layer: the workspace now ships three interchangeable server binaries that share the URL parser, SQL builder, schema cache, and HTTP layer, and differ only in the data-path driver:
-> - `pg-rest-server-tokio-postgres-pg-wired` — tokio-postgres for setup + LISTEN/NOTIFY, `pg-wired::AsyncPool` on the request hot path (default).
-> - `pg-rest-server-tokio-postgres-deadpool` — pure tokio-postgres + deadpool-postgres on the data path. Closest to this document's original "tokio-postgres + deadpool" plan.
-> - `pg-rest-server-resolute` — pure-Rust wire stack via the `resolute` ecosystem; zero tokio-postgres.
+> - `pg-rest-server-tokio-postgres-pg-wired`: tokio-postgres for setup + LISTEN/NOTIFY, `pg-wired::AsyncPool` on the request hot path (default).
+> - `pg-rest-server-tokio-postgres-deadpool`: pure tokio-postgres + deadpool-postgres on the data path. Closest to this document's original "tokio-postgres + deadpool" plan.
+> - `pg-rest-server-resolute`: pure-Rust wire stack via the `resolute` ecosystem; zero tokio-postgres.
 >
 > See `README.md`, `PERFORMANCE.md`, and `CLAUDE.md` for the current architecture. The tokio-postgres / deadpool / SQLx discussion below reflects the original design and is preserved as historical context.
 
@@ -15,7 +15,7 @@
 
 This document outlines a complete plan for building a PostgREST-like automatic REST API server in Rust, with an eventual path toward an ActiveAdmin-style admin dashboard. The project leverages the mature Rust ecosystem of async runtimes, web frameworks, database drivers, and templating engines to create a high-performance, zero-boilerplate REST layer for any PostgreSQL database.
 
-PostgREST is a standalone Haskell server that introspects a PostgreSQL schema and auto-generates a full REST API — no application code required. Tables become endpoints, foreign keys become embeddable relationships, PostgreSQL roles become the authorization layer, and JWT tokens drive authentication. The goal is to replicate this architecture in Rust, gaining the performance, safety, and ecosystem advantages Rust provides, while designing from the start for extensibility toward an admin UI.
+PostgREST is a standalone Haskell server that introspects a PostgreSQL schema and auto-generates a full REST API. No application code required. Tables become endpoints, foreign keys become embeddable relationships, PostgreSQL roles become the authorization layer, and JWT tokens drive authentication. The goal is to replicate this architecture in Rust, gaining the performance, safety, and ecosystem advantages Rust provides, while designing from the start for extensibility toward an admin UI.
 
 ---
 
@@ -27,13 +27,13 @@ Before diving into the Rust plan, here is a summary of what PostgREST does and h
 
 Every HTTP request flows through a clean pipeline:
 
-1. **Warp HTTP server** — Receives the request. PostgREST uses Haskell's Warp library, a compiled server with lightweight green threads.
-2. **Auth.hs** — Decodes JWT from the `Authorization: Bearer` header, extracts the `role` claim.
-3. **ApiRequest.hs** — Parses the URL path (target table/view/function), query string (PostgREST filter syntax), headers, and body.
-4. **Plan.hs** — Transforms the parsed request into an internal AST using the schema cache. Fills in SQL details like `ON CONFLICT` clauses and JOIN conditions.
-5. **Query.hs** — Generates parameterized, prepared SQL from the AST.
-6. **Hasql** — Executes the SQL against PostgreSQL via connection pool using the binary protocol.
-7. **PostgreSQL** — Runs the query under the switched role (`SET LOCAL ROLE`), applying row-level security and GRANT permissions.
+1. **Warp HTTP server**: Receives the request. PostgREST uses Haskell's Warp library, a compiled server with lightweight green threads.
+2. **Auth.hs**: Decodes JWT from the `Authorization: Bearer` header, extracts the `role` claim.
+3. **ApiRequest.hs**: Parses the URL path (target table/view/function), query string (PostgREST filter syntax), headers, and body.
+4. **Plan.hs**: Transforms the parsed request into an internal AST using the schema cache. Fills in SQL details like `ON CONFLICT` clauses and JOIN conditions.
+5. **Query.hs**: Generates parameterized, prepared SQL from the AST.
+6. **Hasql**: Executes the SQL against PostgreSQL via connection pool using the binary protocol.
+7. **PostgreSQL**: Runs the query under the switched role (`SET LOCAL ROLE`), applying row-level security and GRANT permissions.
 
 ### 2.2 Schema cache
 
@@ -45,7 +45,7 @@ PostgREST uses JWT tokens where a `role` claim maps to a PostgreSQL role. For ea
 
 ### 2.4 Resource embedding
 
-Foreign key relationships in the schema cache enable automatic resource embedding — fetching related data in a single request via generated `LATERAL JOIN` queries. This is one of PostgREST's most powerful features and a key differentiator from simple CRUD generators.
+Foreign key relationships in the schema cache enable automatic resource embedding: fetching related data in a single request via generated `LATERAL JOIN` queries. This is one of PostgREST's most powerful features and a key differentiator from simple CRUD generators.
 
 ### 2.5 Performance approach
 
@@ -57,15 +57,15 @@ Three factors drive PostgREST's speed: a compiled language with lightweight conc
 
 Rust is an excellent fit for this kind of project for several reasons:
 
-- **Performance** — Rust compiles to native code with zero-cost abstractions and no garbage collector. The async runtime (Tokio) provides lightweight task scheduling comparable to Haskell's green threads, and web frameworks built on it (Axum, Hyper) consistently benchmark among the fastest HTTP servers in any language.
-- **Memory safety without GC** — Rust's ownership model eliminates entire classes of bugs (use-after-free, data races) at compile time, which is critical for a long-running server handling concurrent database connections.
-- **Ecosystem maturity** — As of 2026, the Rust web and database ecosystem is production-ready. Axum (v0.8.x) is the dominant web framework, SQLx (v0.8.x) and tokio-postgres are battle-tested async PostgreSQL drivers, and the Tower middleware ecosystem provides composable layers for auth, tracing, compression, and more.
-- **Single binary deployment** — Rust compiles to a single static binary with no runtime dependencies (beyond libc or musl), making deployment trivial — identical to PostgREST's single-binary model.
-- **Compile-time SQL checking** — SQLx provides compile-time verification of SQL queries against a real database, catching type mismatches and syntax errors before deployment.
+- **Performance**: Rust compiles to native code with zero-cost abstractions and no garbage collector. The async runtime (Tokio) provides lightweight task scheduling comparable to Haskell's green threads, and web frameworks built on it (Axum, Hyper) consistently benchmark among the fastest HTTP servers in any language.
+- **Memory safety without GC**: Rust's ownership model eliminates entire classes of bugs (use-after-free, data races) at compile time, which is critical for a long-running server handling concurrent database connections.
+- **Ecosystem maturity**: As of 2026, the Rust web and database ecosystem is production-ready. Axum (v0.8.x) is the dominant web framework, SQLx (v0.8.x) and tokio-postgres are battle-tested async PostgreSQL drivers, and the Tower middleware ecosystem provides composable layers for auth, tracing, compression, and more.
+- **Single binary deployment**: Rust compiles to a single static binary with no runtime dependencies (beyond libc or musl), making deployment trivial, identical to PostgREST's single-binary model.
+- **Compile-time SQL checking**: SQLx provides compile-time verification of SQL queries against a real database, catching type mismatches and syntax errors before deployment.
 
 ---
 
-## 4. Rust Ecosystem — Chosen Libraries
+## 4. Rust Ecosystem: Chosen Libraries
 
 ### 4.1 Async runtime: Tokio
 
@@ -75,18 +75,18 @@ Tokio is the standard async runtime for Rust, providing a multi-threaded task sc
 
 Axum is built by the Tokio team and is a thin layer on top of Hyper (HTTP) and Tower (middleware). It uses a macro-free API with extractors for parsing requests and Tower middleware for cross-cutting concerns. Key advantages for this project:
 
-- **Router-centric design** — Routes map URL patterns to async handler functions. Dynamic route registration (which we need for auto-generated table endpoints) is straightforward.
-- **Tower middleware compatibility** — JWT auth, tracing, compression, rate limiting, and CORS are all available as Tower layers, composable and reusable.
-- **State management** — Application state (database pool, schema cache) is injected via `with_state()` and extracted in handlers.
-- **Performance** — Comparable to Hyper directly, with minimal overhead.
+- **Router-centric design**: Routes map URL patterns to async handler functions. Dynamic route registration (which we need for auto-generated table endpoints) is straightforward.
+- **Tower middleware compatibility**: JWT auth, tracing, compression, rate limiting, and CORS are all available as Tower layers, composable and reusable.
+- **State management**: Application state (database pool, schema cache) is injected via `with_state()` and extracted in handlers.
+- **Performance**: Comparable to Hyper directly, with minimal overhead.
 
 ### 4.3 Database driver: tokio-postgres (primary) + SQLx (secondary)
 
 For the dynamic query execution path (API-generated SQL), **tokio-postgres** is the best fit:
 
-- Lowest overhead of any Rust PostgreSQL driver — pure Rust, async-native, minimal abstraction.
+- Lowest overhead of any Rust PostgreSQL driver: pure Rust, async-native, minimal abstraction.
 - Supports the binary protocol for efficient data transfer.
-- Accepts raw SQL strings with bind parameters — exactly what we need for dynamically generated queries.
+- Accepts raw SQL strings with bind parameters, exactly what we need for dynamically generated queries.
 - Supports `LISTEN/NOTIFY` for schema cache reloading.
 - Built-in connection pooling via `deadpool-postgres` or `bb8-postgres`.
 
@@ -97,7 +97,7 @@ For the fixed query path (schema introspection queries), **SQLx** provides compi
 - Perfect for the schema cache queries which are fixed SQL.
 - Can be used alongside tokio-postgres in the same project.
 
-Note: SQLx has had reported performance issues compared to tokio-postgres in some benchmarks. Since the hot path (API query execution) will use tokio-postgres directly, this is not a concern — SQLx is only used for the cold path (schema introspection at startup/reload).
+Note: SQLx has had reported performance issues compared to tokio-postgres in some benchmarks. Since the hot path (API query execution) will use tokio-postgres directly, this is not a concern. SQLx is only used for the cold path (schema introspection at startup/reload).
 
 ### 4.4 Connection pooling: deadpool-postgres
 
@@ -109,7 +109,7 @@ The `jsonwebtoken` crate is the standard Rust JWT library. It supports HMAC, RSA
 
 ### 4.6 Serialization: serde + serde_json
 
-The universal Rust serialization framework. However, following PostgREST's design, we will serialize JSON **in PostgreSQL** (using `to_jsonb`, `json_agg`) and pass the resulting bytes directly to the HTTP response — avoiding serde deserialization/reserialization overhead on the hot path.
+The universal Rust serialization framework. However, following PostgREST's design, we will serialize JSON **in PostgreSQL** (using `to_jsonb`, `json_agg`) and pass the resulting bytes directly to the HTTP response, avoiding serde deserialization/reserialization overhead on the hot path.
 
 ### 4.7 Configuration: config + clap
 
@@ -246,13 +246,13 @@ pub enum Volatility { Immutable, Stable, Volatile }
 
 These query PostgreSQL system catalogs. Using SQLx's `query!` macro, they are compile-time checked:
 
-- **Tables and views** — `SELECT * FROM information_schema.tables WHERE table_schema = ANY($1)`
-- **Columns** — `SELECT * FROM information_schema.columns WHERE table_schema = ANY($1) ORDER BY ordinal_position`
-- **Primary keys** — `SELECT ... FROM pg_constraint c JOIN pg_attribute a ON ... WHERE c.contype = 'p'`
-- **Foreign keys** — `SELECT ... FROM pg_constraint c JOIN pg_attribute a1 ON ... JOIN pg_attribute a2 ON ... WHERE c.contype = 'f'` — this is the most critical query, powering resource embedding.
-- **Functions** — `SELECT ... FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = ANY($1)`
-- **Enum values** — `SELECT ... FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid`
-- **Comments** — `SELECT ... FROM pg_description` joined with `pg_class` and `pg_attribute`
+- **Tables and views**: `SELECT * FROM information_schema.tables WHERE table_schema = ANY($1)`
+- **Columns**: `SELECT * FROM information_schema.columns WHERE table_schema = ANY($1) ORDER BY ordinal_position`
+- **Primary keys**: `SELECT ... FROM pg_constraint c JOIN pg_attribute a ON ... WHERE c.contype = 'p'`
+- **Foreign keys**: `SELECT ... FROM pg_constraint c JOIN pg_attribute a1 ON ... JOIN pg_attribute a2 ON ... WHERE c.contype = 'f'`. This is the most critical query, powering resource embedding.
+- **Functions**: `SELECT ... FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = ANY($1)`
+- **Enum values**: `SELECT ... FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid`
+- **Comments**: `SELECT ... FROM pg_description` joined with `pg_class` and `pg_attribute`
 
 #### 5.2.3 M2M inference
 
@@ -390,10 +390,10 @@ pub fn build_sql(
 
 Key SQL generation strategies:
 
-- **JSON in SQL** — Wrap results in `SELECT coalesce(json_agg(t), '[]')::text FROM (...) t` so PostgreSQL returns a JSON byte string that is passed directly to the HTTP response body.
-- **LATERAL JOIN embedding** — For each `SelectItem::Embed`, generate `LEFT JOIN LATERAL (SELECT to_jsonb(sub) FROM target_table sub WHERE sub.fk_col = parent.pk_col) alias ON true`.
-- **Parameterized values** — All user-supplied filter values become `$N` bind parameters. Column and table names are sanitized with double-quote escaping (not parameterizable in PostgreSQL).
-- **Identifier quoting** — All table and column identifiers are wrapped in `"double_quotes"` to handle reserved words and mixed case.
+- **JSON in SQL**: Wrap results in `SELECT coalesce(json_agg(t), '[]')::text FROM (...) t` so PostgreSQL returns a JSON byte string that is passed directly to the HTTP response body.
+- **LATERAL JOIN embedding**: For each `SelectItem::Embed`, generate `LEFT JOIN LATERAL (SELECT to_jsonb(sub) FROM target_table sub WHERE sub.fk_col = parent.pk_col) alias ON true`.
+- **Parameterized values**: All user-supplied filter values become `$N` bind parameters. Column and table names are sanitized with double-quote escaping (not parameterizable in PostgreSQL).
+- **Identifier quoting**: All table and column identifiers are wrapped in `"double_quotes"` to handle reserved words and mixed case.
 
 #### 5.3.3 URL syntax parser
 
@@ -581,12 +581,12 @@ ActiveAdmin provides: auto-generated CRUD interfaces (index/show/new/edit) for e
 
 This is the "RAAHT stack" that has gained significant traction in the Rust community:
 
-- **Axum** — Same web framework as the REST server, sharing connection pools and middleware.
-- **Askama** — Compile-time Jinja-like templates. Templates are checked at compile time and compiled to fast Rust code. Supports template inheritance (base layouts) and includes.
-- **HTMX** — A 14kB JavaScript library that enables interactive behaviors (inline editing, dynamic filtering, pagination without full page reloads) by making server requests and swapping HTML fragments. No JavaScript framework required.
-- **Tailwind CSS** — Utility-first CSS for consistent, responsive styling.
+- **Axum**: Same web framework as the REST server, sharing connection pools and middleware.
+- **Askama**: Compile-time Jinja-like templates. Templates are checked at compile time and compiled to fast Rust code. Supports template inheritance (base layouts) and includes.
+- **HTMX**: A 14kB JavaScript library that enables interactive behaviors (inline editing, dynamic filtering, pagination without full page reloads) by making server requests and swapping HTML fragments. No JavaScript framework required.
+- **Tailwind CSS**: Utility-first CSS for consistent, responsive styling.
 
-This combination means the admin UI is server-rendered HTML with sprinkles of interactivity — minimal JavaScript, maximum leverage of the Rust backend. It mirrors how Ruby on Rails + Turbo/Hotwire works, which is conceptually close to ActiveAdmin.
+This combination means the admin UI is server-rendered HTML with sprinkles of interactivity: minimal JavaScript, maximum leverage of the Rust backend. It mirrors how Ruby on Rails + Turbo/Hotwire works, which is conceptually close to ActiveAdmin.
 
 #### 5.5.3 Auto-generated views from the schema cache
 
@@ -605,17 +605,17 @@ This combination means the admin UI is server-rendered HTML with sprinkles of in
 
 #### 5.5.4 Page types
 
-- **Index page** — Paginated, sortable table with column headers derived from the schema. Sidebar filters for each column type. HTMX-powered pagination (no full page reload). Export buttons for CSV/JSON.
-- **Show page** — Detail view of a single record. Related records displayed via the FK graph. Navigation links to related tables.
-- **New/Edit page** — Form with field types derived from column types. Validation from NOT NULL constraints. FK fields render as searchable dropdowns.
-- **Dashboard** — Configurable landing page with widgets: recent records, aggregate counts, charts.
+- **Index page**: Paginated, sortable table with column headers derived from the schema. Sidebar filters for each column type. HTMX-powered pagination (no full page reload). Export buttons for CSV/JSON.
+- **Show page**: Detail view of a single record. Related records displayed via the FK graph. Navigation links to related tables.
+- **New/Edit page**: Form with field types derived from column types. Validation from NOT NULL constraints. FK fields render as searchable dropdowns.
+- **Dashboard**: Configurable landing page with widgets: recent records, aggregate counts, charts.
 
 #### 5.5.5 Authentication for admin UI
 
 Two options:
 
-- **Same JWT system** — Admin users authenticate via JWT, same as the REST API. A login page generates tokens.
-- **Session-based** — For the admin UI specifically, cookie-based sessions may be more ergonomic. The `tower-sessions` crate provides session middleware for Axum with PostgreSQL-backed session storage.
+- **Same JWT system**: Admin users authenticate via JWT, same as the REST API. A login page generates tokens.
+- **Session-based**: For the admin UI specifically, cookie-based sessions may be more ergonomic. The `tower-sessions` crate provides session middleware for Axum with PostgreSQL-backed session storage.
 
 Both approaches delegate authorization to PostgreSQL roles and RLS, maintaining the single-source-of-truth philosophy.
 
@@ -623,7 +623,7 @@ Both approaches delegate authorization to PostgreSQL roles and RLS, maintaining 
 
 ## 6. Development Roadmap
 
-### Phase 1 — pg-schema-cache (library crate)
+### Phase 1: pg-schema-cache (library crate)
 
 **Goal:** Standalone, well-tested crate that introspects PostgreSQL and produces an in-memory schema representation.
 
@@ -636,7 +636,7 @@ Both approaches delegate authorization to PostgreSQL roles and RLS, maintaining 
 
 **Deliverable:** `pg-schema-cache` crate published to crates.io or internal registry.
 
-### Phase 2 — pg-query-engine (library crate)
+### Phase 2: pg-query-engine (library crate)
 
 **Goal:** Standalone crate that transforms request ASTs into parameterized SQL.
 
@@ -653,7 +653,7 @@ Both approaches delegate authorization to PostgreSQL roles and RLS, maintaining 
 
 **Deliverable:** `pg-query-engine` crate.
 
-### Phase 3 — pg-rest-server (binary crate)
+### Phase 3: pg-rest-server (binary crate)
 
 **Goal:** A working PostgREST alternative that serves a REST API from any PostgreSQL database.
 
@@ -674,7 +674,7 @@ Both approaches delegate authorization to PostgreSQL roles and RLS, maintaining 
 
 **Deliverable:** `pg-rest-server` binary, Docker image, documentation.
 
-### Phase 4 — pg-admin-ui (binary crate)
+### Phase 4: pg-admin-ui (binary crate)
 
 **Goal:** An ActiveAdmin-style web interface auto-generated from the database schema.
 
@@ -693,7 +693,7 @@ Both approaches delegate authorization to PostgreSQL roles and RLS, maintaining 
 
 **Deliverable:** `pg-admin-ui` binary.
 
-### Phase 5 — Polish and production readiness
+### Phase 5: Polish and production readiness
 
 **Tasks:**
 - Performance benchmarking against PostgREST (wrk, k6).
@@ -713,7 +713,7 @@ Both approaches delegate authorization to PostgreSQL roles and RLS, maintaining 
 
 ### 7.1 JSON serialization in PostgreSQL
 
-**Decision: Yes.** Following PostgREST's design, the SQL builder wraps all read queries so PostgreSQL returns JSON directly. The Rust server passes the raw bytes to the HTTP response without deserialization. This eliminates a major performance bottleneck and keeps the server's role minimal — it's a router and query generator, not a data transformer.
+**Decision: Yes.** Following PostgREST's design, the SQL builder wraps all read queries so PostgreSQL returns JSON directly. The Rust server passes the raw bytes to the HTTP response without deserialization. This eliminates a major performance bottleneck and keeps the server's role minimal: it is a router and query generator, not a data transformer.
 
 ### 7.2 tokio-postgres over SQLx for the hot path
 

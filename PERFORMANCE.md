@@ -151,9 +151,9 @@ Same hardware, same ab matrix, same JWT, same database. Numbers in rps; pg-wired
 
 All three backends share the same query/schema/HTTP layers and pass 1013/1013 of the PostgREST compatibility suite. The choice comes down to dependency footprint and throughput goals:
 
-- **`pg-rest-server-tokio-postgres-pg-wired`** — best throughput ceiling, depends on `tokio-postgres` for setup/LISTEN-NOTIFY plus `pg-wired`/`pg-pool` for the hot path. Default if you want the highest rps and don't mind the extra wire-protocol crate in your tree.
-- **`pg-rest-server-resolute`** — same throughput as pg-wired (it wraps the same `pg-wired::AsyncPool`), zero `tokio-postgres` dependency, plus the `resolute` typed query API if you want to extend the server with compile-time-checked queries.
-- **`pg-rest-server-tokio-postgres-deadpool`** — smallest dependency footprint, uses only the long-established `tokio-postgres` and `deadpool-postgres`. Lower throughput ceiling because it cannot pipeline on the data path. Pick this if you'd rather not pull in `pg-wired`, you don't need >10K rps per server, and you'd rather scale horizontally than tune around a custom pool.
+- **`pg-rest-server-tokio-postgres-pg-wired`**: best throughput ceiling, depends on `tokio-postgres` for setup/LISTEN-NOTIFY plus `pg-wired`/`pg-pool` for the hot path. Default if you want the highest rps and don't mind the extra wire-protocol crate in your tree.
+- **`pg-rest-server-resolute`**: same throughput as pg-wired (it wraps the same `pg-wired::AsyncPool`), zero `tokio-postgres` dependency, plus the `resolute` typed query API if you want to extend the server with compile-time-checked queries.
+- **`pg-rest-server-tokio-postgres-deadpool`**: smallest dependency footprint, uses only the long-established `tokio-postgres` and `deadpool-postgres`. Lower throughput ceiling because it cannot pipeline on the data path. Pick this if you'd rather not pull in `pg-wired`, you don't need >10K rps per server, and you'd rather scale horizontally than tune around a custom pool.
 
 ## Reproducing
 
