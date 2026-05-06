@@ -1,5 +1,5 @@
 -- ==========================================================================
--- Test database schema for postgrest-rust integration tests.
+-- Test database schema for pg-rest-server integration tests.
 -- Mirrors PostgREST conventions: authenticator role, anon role, api schema.
 -- ==========================================================================
 
