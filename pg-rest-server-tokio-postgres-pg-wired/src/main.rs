@@ -8,7 +8,10 @@ use pg_rest_server_tokio_postgres_pg_wired::config::AppConfig;
 use pg_rest_server_tokio_postgres_pg_wired::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "pg-rest-server-tokio-postgres-pg-wired", about = "Automatic REST API for PostgreSQL")]
+#[command(
+    name = "pg-rest-server-tokio-postgres-pg-wired",
+    about = "Automatic REST API for PostgreSQL"
+)]
 struct Cli {
     /// Path to TOML config file
     #[arg(long, default_value = "pg-rest.toml")]
@@ -45,7 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         conn.await.ok();
     });
-    let cache = pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas).await?;
+    let cache =
+        pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas)
+            .await?;
     drop(client);
     tracing::info!(
         "Schema cache loaded: {} tables, {} functions",

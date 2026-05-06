@@ -8,7 +8,10 @@ use pg_rest_server_tokio_postgres_deadpool::config::AppConfig;
 use pg_rest_server_tokio_postgres_deadpool::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "pg-rest-server-tokio-postgres-deadpool", about = "Automatic REST API for PostgreSQL")]
+#[command(
+    name = "pg-rest-server-tokio-postgres-deadpool",
+    about = "Automatic REST API for PostgreSQL"
+)]
 struct Cli {
     /// Path to TOML config file
     #[arg(long, default_value = "pg-rest.toml")]
@@ -44,7 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         conn.await.ok();
     });
-    let cache = pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas).await?;
+    let cache =
+        pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas)
+            .await?;
     drop(client);
     tracing::info!(
         "Schema cache loaded: {} tables, {} functions",
@@ -197,4 +202,3 @@ async fn shutdown_signal() {
         .expect("failed to listen for ctrl-c");
     tracing::info!("Shutdown signal received");
 }
-
