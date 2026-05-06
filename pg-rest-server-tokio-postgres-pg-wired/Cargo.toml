@@ -1,12 +1,20 @@
 [package]
 name = "pg-rest-server-tokio-postgres-pg-wired"
-version = "0.1.0"
-edition = "2021"
+description = "PostgREST-compatible REST API server backed by tokio-postgres on the control path and the pg-wired pipelined async pool on the data path."
+keywords = ["postgres", "postgrest", "rest", "api", "server"]
+categories = ["database", "web-programming::http-server"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 # Internal crates
-pg-schema-cache-tokio-postgres = { path = "../pg-schema-cache-tokio-postgres" }
-pg-query-engine = { path = "../pg-query-engine" }
+pg-schema-cache-tokio-postgres = { path = "../pg-schema-cache-tokio-postgres", version = "0.1.0" }
+pg-query-engine = { path = "../pg-query-engine", version = "0.1.0" }
 pg-wired = { workspace = true }
 pg-pool = { workspace = true }
 

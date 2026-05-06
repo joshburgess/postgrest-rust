@@ -1,10 +1,18 @@
 [package]
 name = "pg-query-engine"
-version = "0.1.0"
-edition = "2021"
+description = "PostgREST-compatible URL parser and parameterized SQL builder for PostgreSQL."
+keywords = ["postgres", "postgrest", "rest", "sql", "api"]
+categories = ["database", "web-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-pg-schema-cache-types = { path = "../pg-schema-cache-types" }
+pg-schema-cache-types = { path = "../pg-schema-cache-types", version = "0.1.0" }
 serde_json = "1"
 thiserror = "2"
 

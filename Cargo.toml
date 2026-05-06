@@ -2,6 +2,15 @@
 members = ["pg-schema-cache-types", "pg-schema-cache-tokio-postgres", "pg-schema-cache-resolute", "pg-query-engine", "pg-rest-server-tokio-postgres-pg-wired", "pg-rest-server-tokio-postgres-deadpool", "pg-rest-server-resolute", "test/compat"]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshburgess/pg-rest-server"
+homepage = "https://github.com/joshburgess/pg-rest-server"
+authors = ["Josh Burgess"]
+rust-version = "1.75"
+
 [workspace.dependencies]
 pg-wired = "0.3"
 pg-pool = "0.3"

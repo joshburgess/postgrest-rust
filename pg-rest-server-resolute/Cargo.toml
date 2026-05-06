@@ -1,12 +1,20 @@
 [package]
 name = "pg-rest-server-resolute"
-version = "0.1.0"
-edition = "2021"
+description = "PostgREST-compatible REST API server backed by the resolute database client (zero tokio-postgres on the data path)."
+keywords = ["postgres", "postgrest", "rest", "api", "resolute"]
+categories = ["database", "web-programming::http-server"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-# Internal crates — NO tokio-postgres
-pg-schema-cache-resolute = { path = "../pg-schema-cache-resolute" }
-pg-query-engine = { path = "../pg-query-engine" }
+# Internal crates, NO tokio-postgres
+pg-schema-cache-resolute = { path = "../pg-schema-cache-resolute", version = "0.1.0" }
+pg-query-engine = { path = "../pg-query-engine", version = "0.1.0" }
 pg-wired = { workspace = true }
 resolute = { workspace = true }
 
