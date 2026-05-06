@@ -37,8 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
-    // 3. (deadpool experiment) — no separate URI parsing needed; deadpool
-    //    consumes a `tokio_postgres::Config` parsed straight from the URI.
+    // 3. Deadpool consumes a `tokio_postgres::Config` parsed straight from
+    //    the URI, so no separate parsing step is needed here.
 
     // 4. Build initial schema cache using a one-off tokio-postgres connection.
     tracing::info!("Loading schema cache…");
@@ -47,9 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         conn.await.ok();
     });
-    let cache =
-        pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas)
-            .await?;
+    let cache = pg_schema_cache::build_schema_cache(&client, &config.database.schemas).await?;
     drop(client);
     tracing::info!(
         "Schema cache loaded: {} tables, {} functions",
@@ -68,8 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         v
     };
 
-    // 7. Create deadpool-postgres pool (experiment baseline, replaces both
-    //    `pg-pool::ConnPool` and `pg-wired::AsyncPool`).
+    // 7. Create the deadpool-postgres pool used by every request handler.
     let pool = {
         let pg_cfg: tokio_postgres::Config = config
             .database
@@ -155,7 +152,7 @@ async fn schema_listener_loop(state: Arc<AppState>) {
 async fn run_schema_listener(
     uri: &str,
     schemas: &[String],
-    tx: &watch::Sender<Arc<pg_schema_cache_tokio_postgres::SchemaCache>>,
+    tx: &watch::Sender<Arc<pg_schema_cache::SchemaCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (client, mut connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
 
@@ -183,7 +180,7 @@ async fn run_schema_listener(
     while let Some(notification) = notify_rx.recv().await {
         if notification.channel() == "pgrst" {
             tracing::info!("Schema reload notification received");
-            match pg_schema_cache_tokio_postgres::build_schema_cache(&client, schemas).await {
+            match pg_schema_cache::build_schema_cache(&client, schemas).await {
                 Ok(cache) => {
                     tx.send(Arc::new(cache)).ok();
                     tracing::info!("Schema cache reloaded via NOTIFY");

@@ -10,7 +10,7 @@ use pg_query_engine::{
     ApiRequest, ConflictAction, CountOption, DeleteRequest, FilterNode, FunctionCall,
     InsertRequest, ReadRequest, SelectItem, SqlOutput, UpdateRequest,
 };
-use pg_schema_cache_tokio_postgres::{ReturnType, SchemaCache};
+use pg_schema_cache::{ReturnType, SchemaCache};
 
 use crate::auth::{extract_jwt_claims, JwtClaims};
 use crate::error::ApiError;
@@ -279,7 +279,7 @@ fn as_text_params(sql: &SqlOutput) -> Vec<&(dyn tokio_postgres::types::ToSql + S
         .collect()
 }
 
-/// Execute via deadpool-postgres + tokio-postgres (experiment baseline).
+/// Execute via deadpool-postgres + tokio-postgres.
 /// Pattern: pool.get() → tx start → setup SQL via batch_execute → query → commit.
 async fn execute_wire(
     pool: &deadpool_postgres::Pool,
@@ -863,8 +863,7 @@ pub async fn handle_reload(State(state): State<Arc<AppState>>) -> Result<Respons
         conn.await.ok();
     });
     let cache =
-        pg_schema_cache_tokio_postgres::build_schema_cache(&client, &state.config.database.schemas)
-            .await?;
+        pg_schema_cache::build_schema_cache(&client, &state.config.database.schemas).await?;
     drop(client);
 
     let tables = cache.tables.len();

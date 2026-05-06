@@ -46,10 +46,9 @@ async fn setup() -> axum::Router {
     tokio::spawn(async move {
         conn.await.ok();
     });
-    let cache =
-        pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas)
-            .await
-            .unwrap();
+    let cache = pg_schema_cache::build_schema_cache(&client, &config.database.schemas)
+        .await
+        .unwrap();
     drop(client);
 
     let (cache_tx, cache_rx) = watch::channel(Arc::new(cache));

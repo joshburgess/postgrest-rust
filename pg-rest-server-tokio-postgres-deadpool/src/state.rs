@@ -3,11 +3,11 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use crate::config::AppConfig;
-use pg_schema_cache_tokio_postgres::SchemaCache;
+use pg_schema_cache::SchemaCache;
 
 pub struct AppState {
-    /// Deadpool-postgres pool. Replaces both the previous `pg-pool::ConnPool`
-    /// and `pg-wired::AsyncPool` for the deadpool A/B experiment.
+    /// Deadpool-postgres pool. The data path runs entirely on
+    /// tokio-postgres; no `pg-wired` or `pg-pool`.
     pub pool: deadpool_postgres::Pool,
     pub schema_cache: watch::Receiver<Arc<SchemaCache>>,
     pub schema_cache_tx: watch::Sender<Arc<SchemaCache>>,

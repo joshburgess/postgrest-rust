@@ -231,7 +231,7 @@ pg-rest-server-resolute (bin)
       for the pipelined hot path; zero tokio-postgres dependency.
 
        │                                                          │
-       ├── pg-schema-cache-tokio-postgres (lib) ─── used by pg-wired/deadpool
+       ├── pg-schema-cache (lib) ─────────────── used by pg-wired/deadpool
        │       ↳ tokio-postgres                                    │
        │                                                           │
        ├── pg-schema-cache-resolute (lib) ───── used by resolute   │

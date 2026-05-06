@@ -8,8 +8,9 @@
 //!   cargo run -p pg-rest-server-tokio-postgres-pg-wired --release -- --config test/compat/pg-rest-compat.toml &
 //!   cargo run -p compat-test
 //!
-//! Swap `pg-rest-server-tokio-postgres-pg-wired` for `pg-rest-server-resolute` to run
-//! the suite against the resolute-backed implementation instead.
+//! Swap `pg-rest-server-tokio-postgres-pg-wired` for either
+//! `pg-rest-server-tokio-postgres-deadpool` or `pg-rest-server-resolute` to
+//! run the suite against the other backends.
 
 mod cases;
 

@@ -1,4 +1,5 @@
-//! Integration tests against a real PostgreSQL instance (v2: no tokio-postgres).
+//! Integration tests against a real PostgreSQL instance, exercising the
+//! resolute-backed server (no tokio-postgres on the data path).
 //!
 //! Requires:
 //!   docker compose up -d

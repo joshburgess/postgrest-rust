@@ -4,8 +4,9 @@ mod listener;
 
 pub use error::SchemaCacheError;
 pub use listener::start_schema_listener;
-// Re-export types from pg-schema-cache-tokio-postgres so pg-query-engine sees the same types.
-pub use pg_schema_cache_tokio_postgres::{
+// Re-export the canonical SchemaCache types so consumers of this crate can
+// use them without also depending on pg-schema-cache directly.
+pub use pg_schema_cache::{
     Column, FuncParam, Function, QualifiedName, RelType, Relationship, ReturnType, SchemaCache,
     Table, Volatility,
 };
