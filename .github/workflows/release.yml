@@ -44,11 +44,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p pg-rest-server
+        run: cargo build --release --target ${{ matrix.target }} -p pg-rest-server-tokio-postgres
 
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
+          # Ship the binary as `pg-rest-server` for end-user friendliness; the
+          # crate itself is `pg-rest-server-tokio-postgres` to distinguish it
+          # from the resolute-backed variant in the workspace.
+          cp pg-rest-server-tokio-postgres pg-rest-server
           tar czf ../../../pg-rest-server-${{ matrix.target }}.tar.gz pg-rest-server
           cd ../../..
 

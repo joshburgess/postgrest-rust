@@ -51,10 +51,7 @@ fn parse_select_item(input: &str) -> Result<SelectItem, ParseError> {
 
         // Parse alias:target!inner or alias:target or just target
         let (alias, rest) = if let Some(colon) = before.find(':') {
-            (
-                Some(before[..colon].to_string()),
-                &before[colon + 1..],
-            )
+            (Some(before[..colon].to_string()), &before[colon + 1..])
         } else {
             (None, before)
         };
@@ -194,10 +191,7 @@ pub fn parse_filter_expression(expr: &str) -> Result<FilterNode, ParseError> {
     };
 
     // Nested or(...)
-    if let Some(inner) = rest
-        .strip_prefix("or(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
+    if let Some(inner) = rest.strip_prefix("or(").and_then(|s| s.strip_suffix(')')) {
         let parts = split_top_level(inner, ',');
         let nodes: Result<Vec<FilterNode>, _> = parts
             .iter()
@@ -212,10 +206,7 @@ pub fn parse_filter_expression(expr: &str) -> Result<FilterNode, ParseError> {
     }
 
     // Nested and(...)
-    if let Some(inner) = rest
-        .strip_prefix("and(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
+    if let Some(inner) = rest.strip_prefix("and(").and_then(|s| s.strip_suffix(')')) {
         let parts = split_top_level(inner, ',');
         let nodes: Result<Vec<FilterNode>, _> = parts
             .iter()
@@ -286,12 +277,18 @@ fn parse_op_and_value(
             let values: Vec<String> = inner.split(',').map(|s| s.trim().to_string()).collect();
             Ok((FilterOp::In, FilterValue::List(values)))
         }
-        "cs" => Ok((FilterOp::Contains, FilterValue::Value(value_str.to_string()))),
+        "cs" => Ok((
+            FilterOp::Contains,
+            FilterValue::Value(value_str.to_string()),
+        )),
         "cd" => Ok((
             FilterOp::ContainedIn,
             FilterValue::Value(value_str.to_string()),
         )),
-        "ov" => Ok((FilterOp::Overlaps, FilterValue::Value(value_str.to_string()))),
+        "ov" => Ok((
+            FilterOp::Overlaps,
+            FilterValue::Value(value_str.to_string()),
+        )),
         "fts" => Ok((
             FilterOp::Fts(None),
             FilterValue::Value(value_str.to_string()),
@@ -396,7 +393,9 @@ mod tests {
     fn test_parse_select_cast() {
         let items = parse_select("id::text,name").unwrap();
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], SelectItem::Cast { column, pg_type } if column == "id" && pg_type == "text"));
+        assert!(
+            matches!(&items[0], SelectItem::Cast { column, pg_type } if column == "id" && pg_type == "text")
+        );
     }
 
     #[test]
@@ -430,7 +429,9 @@ mod tests {
             } => {
                 assert_eq!(target, "authors");
                 assert_eq!(sub_request.select.len(), 2);
-                assert!(matches!(&sub_request.select[1], SelectItem::Embed { target, .. } if target == "books"));
+                assert!(
+                    matches!(&sub_request.select[1], SelectItem::Embed { target, .. } if target == "books")
+                );
             }
             _ => panic!("expected embed"),
         }
@@ -450,9 +451,7 @@ mod tests {
         let f = parse_filter("id", "not.in.(1,2,3)").unwrap();
         assert!(f.negated);
         assert!(matches!(f.operator, FilterOp::In));
-        assert!(
-            matches!(&f.value, FilterValue::List(v) if v == &["1", "2", "3"])
-        );
+        assert!(matches!(&f.value, FilterValue::List(v) if v == &["1", "2", "3"]));
     }
 
     #[test]

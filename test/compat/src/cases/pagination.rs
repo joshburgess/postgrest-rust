@@ -10,19 +10,17 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/numbered?order=id.asc&limit=100", jwt),
         g("/authors?order=id.asc&limit=1", jwt),
         g("/items?order=id.asc&limit=2", jwt),
-
         // ==== Offset ====
         g("/numbered?order=id.asc&limit=5&offset=0", jwt),
         g("/numbered?order=id.asc&limit=5&offset=5", jwt),
         g("/numbered?order=id.asc&limit=5&offset=50", jwt),
         g("/numbered?order=id.asc&limit=5&offset=95", jwt),
         g("/numbered?order=id.asc&limit=5&offset=100", jwt), // past end
-        g("/numbered?order=id.asc&limit=1&offset=99", jwt), // last row
-        g("/numbered?order=id.asc&offset=200", jwt), // way past end
+        g("/numbered?order=id.asc&limit=1&offset=99", jwt),  // last row
+        g("/numbered?order=id.asc&offset=200", jwt),         // way past end
         g("/authors?order=id.asc&limit=1&offset=1", jwt),
         g("/authors?order=id.asc&limit=1&offset=2", jwt),
         g("/authors?order=id.asc&limit=10&offset=0", jwt),
-
         // ==== Range header ====
         {
             let mut tc = g("/numbered?order=id.asc", jwt);
@@ -48,7 +46,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Range", "0-0".to_string()));
             tc
         },
-
         // ==== Count=exact ====
         {
             let mut tc = g("/authors?order=id.asc&id=in.(1,2,3)", jwt);
@@ -86,7 +83,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Prefer", "count=exact".to_string()));
             tc
         },
-
         // ==== More limit/offset combos ====
         g("/books?order=id.asc&limit=2&offset=0", jwt),
         g("/books?order=id.asc&limit=2&offset=2", jwt),
@@ -95,7 +91,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/employees?order=id.asc&limit=3&offset=3", jwt),
         g("/profiles?order=id.asc&limit=2", jwt),
         g("/profiles?order=id.asc&limit=2&offset=2", jwt),
-
         // ==== Range on small tables ====
         {
             let mut tc = g("/books?order=id.asc", jwt);
@@ -109,7 +104,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Range", "0-2".to_string()));
             tc
         },
-
         // ==== Count on more tables ====
         {
             let mut tc = g("/profiles?order=id.asc", jwt);
@@ -135,7 +129,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
             tc.headers.push(("Prefer", "count=exact".to_string()));
             tc
         },
-
         // ==== Count with limit (partial content 206) ====
         {
             let mut tc = g("/profiles?order=id.asc&limit=2", jwt);

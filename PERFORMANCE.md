@@ -1,6 +1,6 @@
 # Performance
 
-Benchmark results comparing pg-rest-server (Rust/pg-wire AsyncConn) against PostgREST (Haskell/Hasql) on the same PostgreSQL instance.
+Benchmark results comparing pg-rest-server (Rust/pg-wired AsyncConn) against PostgREST (Haskell/Hasql) on the same PostgreSQL instance. Numbers below are for the `pg-rest-server-tokio-postgres` binary; the `pg-rest-server-resolute` variant uses the same `pg-wired` data path and is expected to be in the same range.
 
 ## Test Environment
 
@@ -15,7 +15,7 @@ Benchmark results comparing pg-rest-server (Rust/pg-wire AsyncConn) against Post
 
 ## Architecture
 
-pg-rest-server uses a custom wire protocol driver (`pg-wire`) with:
+pg-rest-server uses a custom wire protocol driver (`pg-wired`) with:
 - **Async writer/reader split**: dedicated tokio tasks for send and receive
 - **Message coalescing**: concurrent requests batched into single `write()` syscall
 - **Binary extended query protocol**: parameterized queries (injection-safe)
@@ -106,9 +106,9 @@ The current bottleneck is the **single PostgreSQL backend process**. Each TCP co
 |---|---|---|---|
 | tokio-postgres + transaction | 7,096 | 6,826 | Binary protocol |
 | simple_query (inlined params) | 21,453 | 20,165 | String escaping |
-| pg-wire pool (binary) | 10,796 | 6,826 | Binary protocol |
-| pg-wire AsyncConn ×1 (binary) | 13,267 | 13,155 | Binary protocol |
-| **pg-wire AsyncPool ×4 (binary)** | **25,036** | **23,987** | **Binary protocol** |
+| pg-wired pool (binary) | 10,796 | 6,826 | Binary protocol |
+| pg-wired AsyncConn ×1 (binary) | 13,267 | 13,155 | Binary protocol |
+| **pg-wired AsyncPool ×4 (binary)** | **25,036** | **23,987** | **Binary protocol** |
 | PostgREST (reference) | 7,353 | 2,075 | Binary protocol |
 
 The AsyncPool architecture delivers the best combination of speed and safety: binary protocol parameterization (injection-proof) with async message coalescing and multi-backend parallelism.

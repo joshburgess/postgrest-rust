@@ -1,15 +1,15 @@
-pub mod query;
-pub mod rpc;
-pub mod mutations;
-pub mod embedding;
-pub mod pagination;
-pub mod logic_filters;
-pub mod json_ops;
-pub mod singular;
 pub mod auth;
-pub mod explain;
 pub mod cors;
 pub mod edge_cases;
+pub mod embedding;
+pub mod explain;
+pub mod json_ops;
+pub mod logic_filters;
+pub mod mutations;
+pub mod pagination;
+pub mod query;
+pub mod rpc;
+pub mod singular;
 
 use crate::TestCase;
 use serde_json::Value;

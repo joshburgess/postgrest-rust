@@ -207,10 +207,7 @@ pub(crate) async fn build(
 // Query executors
 // ---------------------------------------------------------------------------
 
-async fn load_tables(
-    client: &Client,
-    schemas: &[String],
-) -> Result<Vec<Table>, SchemaCacheError> {
+async fn load_tables(client: &Client, schemas: &[String]) -> Result<Vec<Table>, SchemaCacheError> {
     let rows = client.query(TABLES_QUERY, &[&schemas]).await?;
     let mut tables = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -274,9 +271,7 @@ async fn load_primary_keys(
             row.get::<_, String>("table_schema"),
             row.get::<_, String>("table_name"),
         );
-        map.entry(qn)
-            .or_default()
-            .push(row.get("column_name"));
+        map.entry(qn).or_default().push(row.get("column_name"));
     }
     Ok(map)
 }
@@ -349,10 +344,7 @@ async fn load_functions(
             if mode == "i" || mode == "b" || mode == "v" {
                 in_count += 1;
                 params.push(FuncParam {
-                    name: arg_names
-                        .get(i)
-                        .and_then(|n| n.clone())
-                        .unwrap_or_default(),
+                    name: arg_names.get(i).and_then(|n| n.clone()).unwrap_or_default(),
                     pg_type: type_name.clone(),
                     has_default: in_count > (num_args - num_defaults),
                 });
@@ -376,9 +368,7 @@ async fn load_functions(
     Ok(map)
 }
 
-async fn load_enums(
-    client: &Client,
-) -> Result<HashMap<String, Vec<String>>, SchemaCacheError> {
+async fn load_enums(client: &Client) -> Result<HashMap<String, Vec<String>>, SchemaCacheError> {
     let rows = client.query(ENUMS_QUERY, &[]).await?;
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for row in &rows {
@@ -421,8 +411,10 @@ fn build_relationships(
         });
 
         // Referenced table → FK table (OneToMany), swap column pairs
-        let reverse_pairs: Vec<(String, String)> =
-            col_pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect();
+        let reverse_pairs: Vec<(String, String)> = col_pairs
+            .iter()
+            .map(|(a, b)| (b.clone(), a.clone()))
+            .collect();
         rels.push(Relationship {
             from_table: to,
             to_table: from,
@@ -441,10 +433,7 @@ fn build_relationships(
 
 /// A join table is a table with exactly two FK constraints where every column
 /// is either part of a FK or part of the primary key (e.g. `post_tags(post_id, tag_id)`).
-fn infer_m2m(
-    fks: &[RawForeignKey],
-    tables: &HashMap<QualifiedName, Table>,
-) -> Vec<Relationship> {
+fn infer_m2m(fks: &[RawForeignKey], tables: &HashMap<QualifiedName, Table>) -> Vec<Relationship> {
     let mut fks_by_table: HashMap<QualifiedName, Vec<&RawForeignKey>> = HashMap::new();
     for fk in fks {
         let qn = QualifiedName::new(&fk.from_schema, &fk.from_table);
@@ -468,9 +457,10 @@ fn infer_m2m(
             .collect();
 
         // Every column must be an FK column or a PK column.
-        let is_join_table = table.columns.iter().all(|col| {
-            fk_columns.contains(col.name.as_str()) || col.is_pk
-        });
+        let is_join_table = table
+            .columns
+            .iter()
+            .all(|col| fk_columns.contains(col.name.as_str()) || col.is_pk);
 
         if !is_join_table {
             continue;

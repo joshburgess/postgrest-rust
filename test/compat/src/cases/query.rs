@@ -18,7 +18,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/unicode_test?order=id.asc", jwt),
         g("/projects?order=id.asc", jwt),
         g("/tasks?order=id.asc", jwt),
-
         // ==== Select columns ====
         g("/authors?select=name&order=id.asc", jwt),
         g("/authors?select=id,name&order=id.asc", jwt),
@@ -28,11 +27,9 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/types_test?select=id,text_col,bool_col&order=id.asc", jwt),
         g("/compound_pk?select=k1,k2,value&order=k1.asc,k2.asc", jwt),
         g("/employees?select=id,name&order=id.asc", jwt),
-
         // ==== Select with cast ====
         g("/authors?select=id::text,name&order=id.asc", jwt),
         g("/books?select=pages::text&order=id.asc", jwt),
-
         // ==== eq filter ====
         g("/authors?name=eq.Alice", jwt),
         g("/authors?id=eq.1", jwt),
@@ -45,13 +42,11 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/types_test?date_col=eq.2024-01-01", jwt),
         g("/compound_pk?k1=eq.1&k2=eq.1", jwt),
         g("/employees?manager_id=eq.1&order=id.asc", jwt),
-
         // ==== neq filter ====
         g("/authors?name=neq.Alice&order=id.asc", jwt),
         g("/types_test?bool_col=neq.true&order=id.asc", jwt),
         g("/types_test?int_col=neq.1&order=id.asc", jwt),
         g("/books?pages=neq.350&order=id.asc", jwt),
-
         // ==== gt / gte / lt / lte ====
         g("/books?pages=gt.400&order=id.asc", jwt),
         g("/books?pages=gte.400&order=id.asc", jwt),
@@ -67,7 +62,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/numbered?val=lte.5&order=id.asc", jwt),
         g("/items?price=gt.10&order=id.asc", jwt),
         g("/items?price=lte.5&order=id.asc", jwt),
-
         // ==== like / ilike ====
         g("/authors?name=like.A*&order=id.asc", jwt),
         g("/authors?name=like.*o*&order=id.asc", jwt),
@@ -79,7 +73,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/items?name=like.G*&order=id.asc", jwt),
         g("/items?name=ilike.*widget*&order=id.asc", jwt),
         g("/unicode_test?name=like.caf*&order=id.asc", jwt),
-
         // ==== in ====
         g("/authors?id=in.(1,2)&order=id.asc", jwt),
         g("/authors?id=in.(1,2,3)&order=id.asc", jwt),
@@ -88,7 +81,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/types_test?int_col=in.(1,2)&order=id.asc", jwt),
         g("/settings?key=in.(theme,site_name)&order=key.asc", jwt),
         g("/employees?id=in.(1,2,3)&order=id.asc", jwt),
-
         // ==== is ====
         g("/authors?bio=is.null&order=id.asc", jwt),
         g("/types_test?text_col=is.null&order=id.asc", jwt),
@@ -101,7 +93,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/types_test?json_col=is.null&order=id.asc", jwt),
         g("/entities?arr=is.null&order=id.asc", jwt),
         g("/entities?data=is.null&order=id.asc", jwt),
-
         // ==== not.X negation ====
         g("/authors?bio=not.is.null&order=id.asc", jwt),
         g("/authors?name=not.eq.Alice&order=id.asc", jwt),
@@ -115,7 +106,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/types_test?int_col=not.eq.1&order=id.asc", jwt),
         g("/types_test?date_col=not.is.null&order=id.asc", jwt),
         g("/items?active=not.eq.true&order=id.asc", jwt),
-
         // ==== Ordering ====
         g("/authors?order=name.asc&id=in.(1,2,3)", jwt),
         g("/authors?order=name.desc&id=in.(1,2,3)", jwt),
@@ -128,11 +118,9 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/items?order=price.desc", jwt),
         g("/items?order=name.asc", jwt),
         g("/numbered?order=val.desc&limit=5", jwt),
-
         // ==== Multiple order columns (comma-separated, PostgREST syntax) ====
         g("/books?order=author_id.asc,title.asc", jwt),
         g("/employees?order=manager_id.asc.nullsfirst,name.asc", jwt),
-
         // ==== Limit / Offset ====
         g("/authors?order=id.asc&limit=1", jwt),
         g("/authors?order=id.asc&limit=2", jwt),
@@ -143,86 +131,86 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/numbered?order=id.asc&limit=10&offset=0", jwt),
         g("/numbered?order=id.asc&limit=1&offset=99", jwt),
         g("/items?order=id.asc&limit=2", jwt),
-
         // ==== Multiple filters (AND) ====
         g("/books?pages=gt.300&pages=lt.500&order=id.asc", jwt),
         g("/books?author_id=eq.1&pages=gt.400", jwt),
         g("/types_test?int_col=gt.0&text_col=eq.hello", jwt),
         g("/items?active=eq.true&price=gt.5&order=id.asc", jwt),
-        g("/employees?manager_id=eq.1&name=like.*VP*&order=id.asc", jwt),
-        g("/books?author_id=eq.2&published=not.is.null&order=id.asc", jwt),
+        g(
+            "/employees?manager_id=eq.1&name=like.*VP*&order=id.asc",
+            jwt,
+        ),
+        g(
+            "/books?author_id=eq.2&published=not.is.null&order=id.asc",
+            jwt,
+        ),
         g("/types_test?bool_col=eq.true&int_col=eq.1", jwt),
-
         // ==== Empty results ====
         g("/authors?name=eq.Nobody", jwt),
         g("/books?pages=gt.10000", jwt),
         g("/types_test?int_col=eq.999", jwt),
         g("/items?name=eq.Nonexistent", jwt),
         g("/numbered?val=gt.1000", jwt),
-
         // ==== Contains / Contained-in (arrays) ====
         g("/entities?arr=cs.{a,b}&order=id.asc", jwt),
         g("/entities?arr=cs.{b}&order=id.asc", jwt),
         g("/entities?arr=cd.{a,b,c,d,e}&order=id.asc", jwt),
         g("/entities?arr=cs.{c}&order=id.asc", jwt),
         g("/entities?arr=cs.{a,c}&order=id.asc", jwt),
-
         // ==== Overlaps (arrays) ====
         g("/entities?arr=ov.{a,d}&order=id.asc", jwt),
         g("/entities?arr=ov.{z}&order=id.asc", jwt),
         g("/entities?arr=ov.{a}&order=id.asc", jwt),
         g("/entities?arr=ov.{d,e}&order=id.asc", jwt),
-
         // ==== Three-way AND ====
-        g("/items?active=eq.true&price=gt.5&price=lt.25&order=id.asc", jwt),
-        g("/books?author_id=eq.1&pages=gt.300&pages=lt.600&order=id.asc", jwt),
-        g("/types_test?int_col=gt.0&bool_col=eq.true&text_col=neq.world", jwt),
-
+        g(
+            "/items?active=eq.true&price=gt.5&price=lt.25&order=id.asc",
+            jwt,
+        ),
+        g(
+            "/books?author_id=eq.1&pages=gt.300&pages=lt.600&order=id.asc",
+            jwt,
+        ),
+        g(
+            "/types_test?int_col=gt.0&bool_col=eq.true&text_col=neq.world",
+            jwt,
+        ),
         // ==== not.in with multiple values ====
         g("/authors?id=not.in.(1)&order=id.asc", jwt),
         g("/books?id=not.in.(1,2)&order=id.asc", jwt),
         g("/employees?id=not.in.(1,2,3)&order=id.asc", jwt),
-
         // ==== neq with various types ====
         g("/settings?key=neq.theme&order=key.asc", jwt),
         g("/compound_pk?k1=neq.1&order=k1.asc,k2.asc", jwt),
         g("/types_test?date_col=neq.2024-01-01&order=id.asc", jwt),
-
         // ==== gte/lte boundaries ====
         g("/numbered?val=gte.1&val=lte.1&order=id.asc", jwt),
         g("/numbered?val=gte.100&val=lte.100&order=id.asc", jwt),
         g("/books?pages=gte.350&pages=lte.350&order=id.asc", jwt),
-
         // ==== like with no wildcards (exact match) ====
         g("/authors?name=like.Alice&order=id.asc", jwt),
         g("/books?title=ilike.learning rust&order=id.asc", jwt),
-
         // ==== in with single value ====
         g("/authors?id=in.(1)&order=id.asc", jwt),
         g("/authors?name=in.(Alice)&order=id.asc", jwt),
-
         // ==== Filtering on nullable FK columns ====
         g("/books?author_id=eq.1&order=id.asc", jwt),
         g("/books?author_id=eq.2&order=id.asc", jwt),
         g("/tasks?assigned_to=is.null&order=id.asc", jwt),
         g("/tasks?created_by=eq.1&order=id.asc", jwt),
-
         // ==== More views ====
         g("/authors_with_books?order=id.asc", jwt),
         g("/simple_items?order=id.asc", jwt),
         g("/authors_with_books?book_count=gt.0&order=id.asc", jwt),
         g("/authors_with_books?book_count=eq.0&order=id.asc", jwt),
-
         // ==== Unicode / special characters in values ====
         g("/unicode_test?name=eq.café", jwt),
         g("/unicode_test?name=eq.naïve", jwt),
         g("/unicode_test?name=eq.日本語", jwt),
-
         // ==== Filtering on composite PK ====
         g("/compound_pk?k1=eq.1&order=k2.asc", jwt),
         g("/compound_pk?k2=eq.1&order=k1.asc", jwt),
         g("/compound_pk?k1=eq.1&k2=eq.2", jwt),
-
         // ==== Profiles table (many nullable columns) ====
         g("/profiles?order=id.asc", jwt),
         g("/profiles?select=username,email&order=id.asc", jwt),
@@ -239,36 +227,42 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/profiles?username=ilike.*A*&order=id.asc", jwt),
         g("/profiles?score=gte.70&score=lte.90&order=id.asc", jwt),
         g("/profiles?or=(email.is.null,score.gt.90)&order=id.asc", jwt),
-
         // ==== Select with multiple casts ====
-        g("/profiles?select=username,age::text,score::text&order=id.asc", jwt),
-
+        g(
+            "/profiles?select=username,age::text,score::text&order=id.asc",
+            jwt,
+        ),
         // ==== Order by nullable columns ====
         g("/profiles?order=email.asc.nullsfirst", jwt),
         g("/profiles?order=age.desc.nullslast", jwt),
         g("/profiles?order=score.asc.nullsfirst", jwt),
         g("/profiles?order=bio.asc.nullsfirst", jwt),
-
         // ==== not.like / not.ilike ====
         g("/profiles?username=not.like.a*&order=id.asc", jwt),
         g("/profiles?username=not.ilike.*E*&order=id.asc", jwt),
         g("/profiles?bio=not.is.null&order=id.asc", jwt),
         g("/profiles?bio=not.like.*Dev*&order=id.asc", jwt),
-
         // ==== Compound filters on profiles ====
         g("/profiles?active=eq.true&score=gt.0&order=id.asc", jwt),
         g("/profiles?active=eq.true&age=not.is.null&order=id.asc", jwt),
-        g("/profiles?email=not.is.null&bio=not.is.null&order=id.asc", jwt),
+        g(
+            "/profiles?email=not.is.null&bio=not.is.null&order=id.asc",
+            jwt,
+        ),
         g("/profiles?or=(age.lt.30,age.is.null)&order=id.asc", jwt),
-        g("/profiles?or=(username.eq.alice,and(score.gt.70,score.lt.85))&order=id.asc", jwt),
-
+        g(
+            "/profiles?or=(username.eq.alice,and(score.gt.70,score.lt.85))&order=id.asc",
+            jwt,
+        ),
         // ==== Tasks table queries ====
         g("/tasks?order=id.asc", jwt),
         g("/tasks?project_id=eq.1&order=id.asc", jwt),
         g("/tasks?assigned_to=eq.5&order=id.asc", jwt),
         g("/tasks?created_by=eq.1&order=id.asc", jwt),
-        g("/tasks?select=title,project_id,assigned_to&order=id.asc", jwt),
-
+        g(
+            "/tasks?select=title,project_id,assigned_to&order=id.asc",
+            jwt,
+        ),
         // ==== More filter type permutations ====
         g("/types_test?float_col=eq.1.5", jwt),
         g("/types_test?float_col=neq.1.5&order=id.asc", jwt),
@@ -280,30 +274,43 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/items?quantity=gte.100&order=id.asc", jwt),
         g("/items?quantity=eq.0&order=id.asc", jwt),
         g("/items?quantity=not.eq.0&order=id.asc", jwt),
-
         // ==== Select single column from various tables ====
         g("/numbered?select=val&order=id.asc&limit=3", jwt),
         g("/entities?select=name&order=id.asc", jwt),
         g("/employees?select=name&order=name.asc", jwt),
         g("/tasks?select=title&order=title.asc", jwt),
         g("/projects?select=name&order=name.asc", jwt),
-
         // ==== Filtering with not.in on various types ====
-        g("/numbered?val=not.in.(1,2,3,4,5,6,7,8,9,10)&order=val.asc&limit=5", jwt),
+        g(
+            "/numbered?val=not.in.(1,2,3,4,5,6,7,8,9,10)&order=val.asc&limit=5",
+            jwt,
+        ),
         g("/settings?key=not.in.(theme)&order=key.asc", jwt),
         g("/profiles?username=not.in.(alice,bob)&order=id.asc", jwt),
-
         // ==== Multiple columns in select with ordering ====
-        g("/profiles?select=username,email,age&order=age.asc.nullslast", jwt),
-        g("/employees?select=id,name,manager_id&order=manager_id.asc.nullsfirst,name.asc", jwt),
-        g("/books?select=title,pages,published&order=published.asc.nullslast", jwt),
-
+        g(
+            "/profiles?select=username,email,age&order=age.asc.nullslast",
+            jwt,
+        ),
+        g(
+            "/employees?select=id,name,manager_id&order=manager_id.asc.nullsfirst,name.asc",
+            jwt,
+        ),
+        g(
+            "/books?select=title,pages,published&order=published.asc.nullslast",
+            jwt,
+        ),
         // ==== Filtering and selecting specific columns ====
         g("/books?select=title&pages=gt.300&order=title.asc", jwt),
         g("/authors?select=name&bio=not.is.null&order=name.asc", jwt),
-        g("/items?select=name,price&active=eq.true&order=price.desc", jwt),
-        g("/profiles?select=username,score&score=not.is.null&order=score.desc", jwt),
-
+        g(
+            "/items?select=name,price&active=eq.true&order=price.desc",
+            jwt,
+        ),
+        g(
+            "/profiles?select=username,score&score=not.is.null&order=score.desc",
+            jwt,
+        ),
         // ==== Orders table queries ====
         g("/orders?order=id.asc", jwt),
         g("/orders?select=customer,amount&order=amount.desc", jwt),
@@ -312,7 +319,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/orders?amount=gte.100&order=id.asc", jwt),
         g("/orders?notes=is.null&order=id.asc", jwt),
         g("/orders?status=not.eq.pending&order=id.asc", jwt),
-
         // ==== Logs table queries ====
         g("/logs?order=id.asc", jwt),
         g("/logs?level=eq.error", jwt),
@@ -320,7 +326,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
         g("/logs?level=in.(warn,error)&order=id.asc", jwt),
         g("/logs?select=level,message&order=level.asc,id.asc", jwt),
         g("/logs?message=ilike.*server*&order=id.asc", jwt),
-
         // ==== 404 for nonexistent table ====
         g_status_only("GET /nonexistent (404)", "/nonexistent", jwt),
     ]

@@ -1,3 +1,11 @@
 [workspace]
-members = ["pg-schema-cache", "pg-schema-cache-v2", "pg-query-engine", "pg-rest-server", "pg-rest-server-v2", "pg-wire", "pg-pool", "pg-typed", "pg-typed-derive", "pg-typed-macros", "pg-typed-cli", "test/compat"]
+members = ["pg-schema-cache", "pg-schema-cache-v2", "pg-query-engine", "pg-rest-server-tokio-postgres", "pg-rest-server-resolute", "test/compat"]
 resolver = "2"
+
+[workspace.dependencies]
+pg-wired = "0.2"
+pg-pool = "0.2"
+resolute = "0.2"
+resolute-derive = "0.1"
+resolute-macros = "0.1"
+resolute-cli = "0.1"

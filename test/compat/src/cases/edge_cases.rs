@@ -522,8 +522,11 @@ pub fn cases(jwt_anon: &str, jwt_user: &str) -> Vec<TestCase> {
 }
 
 fn mut_skip_status(
-    name: &'static str, method: &'static str, path: &'static str,
-    body: Option<serde_json::Value>, auth: &str,
+    name: &'static str,
+    method: &'static str,
+    path: &'static str,
+    body: Option<serde_json::Value>,
+    auth: &str,
     extra: Vec<(&'static str, String)>,
 ) -> TestCase {
     let mut tc = mutation(name, method, path, body, auth, extra);

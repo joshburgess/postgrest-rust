@@ -55,4 +55,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p pg-rest-server --test integration
+      - run: cargo test -p pg-rest-server-tokio-postgres --test integration
+      - run: cargo test -p pg-rest-server-resolute --test integration

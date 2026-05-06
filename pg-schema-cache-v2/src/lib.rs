@@ -10,13 +10,13 @@ pub use pg_schema_cache::{
     Table, Volatility,
 };
 
-use pg_wire::PgPipeline;
+use resolute::Executor;
 
 /// Introspects a PostgreSQL database and builds a [`SchemaCache`] containing
 /// all tables, columns, relationships, and functions in the given schemas.
 pub async fn build_schema_cache(
-    pg: &mut PgPipeline,
+    db: &impl Executor,
     schemas: &[String],
 ) -> Result<SchemaCache, SchemaCacheError> {
-    introspection::build(pg, schemas).await
+    introspection::build(db, schemas).await
 }

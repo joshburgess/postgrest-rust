@@ -29,8 +29,13 @@ docker run -v $(pwd)/pg-rest.toml:/etc/pg-rest/pg-rest.toml \
 ### From source
 
 ```bash
-cargo install --path pg-rest-server
-pg-rest-server --config pg-rest.toml
+# Install the tokio-postgres-backed server (default).
+cargo install --path pg-rest-server-tokio-postgres
+pg-rest-server-tokio-postgres --config pg-rest.toml
+
+# Or install the resolute-backed server (pure-Rust wire protocol stack).
+cargo install --path pg-rest-server-resolute
+pg-rest-server-resolute --config pg-rest.toml
 ```
 
 ### Verify
@@ -159,21 +164,43 @@ pg-rest-server is designed as a drop-in replacement. To migrate:
    - OpenAPI 3.0 support via `?openapi-version=3`
    - Error responses use PGRST-prefixed codes but JSON structure matches
 
-5. **Verify compatibility**: Run the included compatibility test suite against both servers:
+5. **Verify compatibility**: Run the included compatibility test suite against either backend.
+
+   First start the reference PostgREST + a test PostgreSQL on port 54323:
 
    ```bash
    cd test/compat && docker compose up -d
-   pg-rest-server --config pg-rest-compat.toml &
+   ```
+
+   Then bring up one of the two pg-rest-server backends on port 3101 and run the suite. The two backends use the same `test/compat/pg-rest-compat.toml` config:
+
+   ```bash
+   # Option A: tokio-postgres backend
+   cargo run -p pg-rest-server-tokio-postgres --release -- --config test/compat/pg-rest-compat.toml &
    cargo run -p compat-test
    ```
 
+   ```bash
+   # Option B: resolute backend (zero tokio-postgres, pure-Rust wire stack)
+   cargo run -p pg-rest-server-resolute --release -- --config test/compat/pg-rest-compat.toml &
+   cargo run -p compat-test
+   ```
+
+   Both backends currently pass 1013/1013 cases against the reference PostgREST.
+
 ## Architecture
 
+There are two interchangeable server implementations sharing the same query/schema layers:
+
 ```
-pg-rest-server (bin)          ← Axum HTTP server, JWT, routing
-    └── pg-query-engine (lib) ← URL parser, SQL builder
-        └── pg-schema-cache (lib) ← PostgreSQL catalog introspection
+pg-rest-server-tokio-postgres (bin)   pg-rest-server-resolute (bin)
+    │   ↳ tokio-postgres + pg-wired       ↳ resolute (pure-Rust wire stack)
+    │
+    └── pg-query-engine (lib)             ← URL parser, SQL builder
+        └── pg-schema-cache (lib)         ← PostgreSQL catalog introspection
 ```
+
+Both binaries pass the full PostgREST compatibility suite (1013/1013).
 
 ## Development
 
@@ -181,16 +208,25 @@ pg-rest-server (bin)          ← Axum HTTP server, JWT, routing
 # Start test database
 docker compose up -d
 
-# Run all tests (74 total: unit + proptest + integration)
+# Run all tests
 cargo test
 
-# Run compatibility tests against PostgREST
+# Run compatibility tests against PostgREST. Start the reference stack once,
+# then run the suite against either backend (or both, in turn) on port 3101.
 cd test/compat && docker compose up -d
-cargo run -p pg-rest-server --release -- --config test/compat/pg-rest-compat.toml &
+
+# tokio-postgres backend
+cargo run -p pg-rest-server-tokio-postgres --release -- --config test/compat/pg-rest-compat.toml &
 cargo run -p compat-test
+kill %1
+
+# resolute backend
+cargo run -p pg-rest-server-resolute --release -- --config test/compat/pg-rest-compat.toml &
+cargo run -p compat-test
+kill %1
 
 # Benchmarks
-cargo run -p pg-rest-server --release -- --config test/fixtures/test-config.toml &
+cargo run -p pg-rest-server-tokio-postgres --release -- --config test/fixtures/test-config.toml &
 k6 run bench/k6.js
 ```
 

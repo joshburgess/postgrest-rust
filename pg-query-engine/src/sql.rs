@@ -183,8 +183,7 @@ impl<'a> SqlBuilder<'a> {
                     }
                 }
                 SelectItem::Spread { target, columns } => {
-                    let spread_parts =
-                        self.build_spread(parent_qn, target, columns)?;
+                    let spread_parts = self.build_spread(parent_qn, target, columns)?;
                     parts.extend(spread_parts);
                 }
             }
@@ -236,8 +235,7 @@ impl<'a> SqlBuilder<'a> {
         let where_clause = join_cond.join(" AND ");
 
         // Resolve columns (* = all columns from target table).
-        let col_names: Vec<String> = if columns.len() == 1
-            && matches!(columns[0], SelectItem::Star)
+        let col_names: Vec<String> = if columns.len() == 1 && matches!(columns[0], SelectItem::Star)
         {
             target_table
                 .columns
@@ -413,12 +411,9 @@ impl<'a> SqlBuilder<'a> {
         target_table: &Table,
         sub_alias: &str,
     ) -> Result<(String, Option<String>), QueryEngineError> {
-        let join_qn = rel
-            .join_table
-            .as_ref()
-            .ok_or_else(|| {
-                QueryEngineError::NoRelationship(parent_qn.clone(), target_qn.name.clone())
-            })?;
+        let join_qn = rel.join_table.as_ref().ok_or_else(|| {
+            QueryEngineError::NoRelationship(parent_qn.clone(), target_qn.name.clone())
+        })?;
         let join_sql = quote_qualified(join_qn);
 
         // Find M2O rels from join table to parent and target.
@@ -482,9 +477,7 @@ impl<'a> SqlBuilder<'a> {
         );
 
         Ok((
-            format!(
-                "COALESCE((SELECT json_agg({sub_alias}) FROM ({inner}) {sub_alias}), '[]')"
-            ),
+            format!("COALESCE((SELECT json_agg({sub_alias}) FROM ({inner}) {sub_alias}), '[]')"),
             None, // M2M inner join filtering not yet implemented
         ))
     }
@@ -566,8 +559,7 @@ impl<'a> SqlBuilder<'a> {
                 } else {
                     let text = json_value_to_text(val);
                     let p = self.add_param(text);
-                    let cast =
-                        cast_param(&p, table.get_column(col).map(|c| c.pg_type.as_str()));
+                    let cast = cast_param(&p, table.get_column(col).map(|c| c.pg_type.as_str()));
                     format!("{} = {cast}", quote_ident(col))
                 }
             })
@@ -666,7 +658,12 @@ impl<'a> SqlBuilder<'a> {
                         SelectItem::Cast { column, pg_type } => {
                             Some(format!("{}::{}", quote_ident(column), pg_type))
                         }
-                        SelectItem::JsonAccess { column, path, as_text, cast } => {
+                        SelectItem::JsonAccess {
+                            column,
+                            path,
+                            as_text,
+                            cast,
+                        } => {
                             let op = if *as_text { "->>" } else { "->" };
                             let escaped = path.replace('\'', "''");
                             let alias = quote_ident(path);
@@ -717,9 +714,7 @@ impl<'a> SqlBuilder<'a> {
                 ))
             }
         } else if req.is_scalar {
-            Ok(format!(
-                "SELECT to_jsonb({func_sql}({args_sql}))::text"
-            ))
+            Ok(format!("SELECT to_jsonb({func_sql}({args_sql}))::text"))
         } else {
             Ok(format!(
                 "SELECT coalesce(json_agg(_pg_t), '[]')::text \
@@ -777,7 +772,11 @@ impl<'a> SqlBuilder<'a> {
                     .iter()
                     .map(|c| self.build_filter_node(c, table))
                     .collect::<Result<_, _>>()?;
-                let parts: Vec<&str> = parts.iter().filter(|s| !s.is_empty()).map(|s| s.as_str()).collect();
+                let parts: Vec<&str> = parts
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.as_str())
+                    .collect();
                 match parts.len() {
                     0 => Ok(String::new()),
                     1 => Ok(parts[0].to_string()),
@@ -789,7 +788,11 @@ impl<'a> SqlBuilder<'a> {
                     .iter()
                     .map(|c| self.build_filter_node(c, table))
                     .collect::<Result<_, _>>()?;
-                let parts: Vec<&str> = parts.iter().filter(|s| !s.is_empty()).map(|s| s.as_str()).collect();
+                let parts: Vec<&str> = parts
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.as_str())
+                    .collect();
                 match parts.len() {
                     0 => Ok(String::new()),
                     1 => Ok(parts[0].to_string()),
@@ -804,15 +807,9 @@ impl<'a> SqlBuilder<'a> {
         }
     }
 
-    fn build_filter(
-        &mut self,
-        filter: &Filter,
-        table: &Table,
-    ) -> Result<String, QueryEngineError> {
+    fn build_filter(&mut self, filter: &Filter, table: &Table) -> Result<String, QueryEngineError> {
         let col = quote_ident(&filter.column);
-        let pg_type = table
-            .get_column(&filter.column)
-            .map(|c| c.pg_type.as_str());
+        let pg_type = table.get_column(&filter.column).map(|c| c.pg_type.as_str());
 
         let condition = match (&filter.operator, &filter.value) {
             (FilterOp::Is, FilterValue::Value(v)) => {
@@ -860,9 +857,7 @@ impl<'a> SqlBuilder<'a> {
                     FilterOp::ContainedIn => format!("{col} <@ {cast}"),
                     FilterOp::Overlaps => format!("{col} && {cast}"),
                     FilterOp::Fts(lang) => fts_expr(&col, "to_tsquery", lang.as_deref(), &p),
-                    FilterOp::Plfts(lang) => {
-                        fts_expr(&col, "plainto_tsquery", lang.as_deref(), &p)
-                    }
+                    FilterOp::Plfts(lang) => fts_expr(&col, "plainto_tsquery", lang.as_deref(), &p),
                     FilterOp::Phfts(lang) => {
                         fts_expr(&col, "phraseto_tsquery", lang.as_deref(), &p)
                     }
@@ -1039,9 +1034,7 @@ fn quote_qualified(qn: &QualifiedName) -> String {
 /// ensures the driver sends `text` and PostgreSQL converts server-side.
 fn cast_param(placeholder: &str, pg_type: Option<&str>) -> String {
     match pg_type {
-        Some("text" | "varchar" | "bpchar" | "name" | "citext") | None => {
-            placeholder.to_string()
-        }
+        Some("text" | "varchar" | "bpchar" | "name" | "citext") | None => placeholder.to_string(),
         Some(t) => format!("({placeholder}::text)::{t}"),
     }
 }
@@ -1113,8 +1106,13 @@ mod tests {
                         enum_values: None,
                     },
                 ],
-                column_index: [("id".to_string(), 0), ("name".to_string(), 1), ("age".to_string(), 2)]
-                    .into_iter().collect(),
+                column_index: [
+                    ("id".to_string(), 0),
+                    ("name".to_string(), 1),
+                    ("age".to_string(), 2),
+                ]
+                .into_iter()
+                .collect(),
                 primary_key: vec!["id".into()],
                 is_view: false,
                 insertable: true,

@@ -1,12 +1,15 @@
 //! PostgREST compatibility test runner.
 //!
-//! Sends identical HTTP requests to both PostgREST and pg-rest-server,
+//! Sends identical HTTP requests to both PostgREST and pg-rest-server-*,
 //! then compares status codes and JSON response bodies.
 //!
 //! Usage:
 //!   cd test/compat && docker compose up -d
-//!   cargo run -p pg-rest-server --release -- --config test/compat/pg-rest-compat.toml &
+//!   cargo run -p pg-rest-server-tokio-postgres --release -- --config test/compat/pg-rest-compat.toml &
 //!   cargo run -p compat-test
+//!
+//! Swap `pg-rest-server-tokio-postgres` for `pg-rest-server-resolute` to run
+//! the suite against the resolute-backed implementation instead.
 
 mod cases;
 
@@ -64,13 +67,19 @@ async fn main() {
 
     let all_cases = cases::all_cases(&jwt_anon, &jwt_user);
     let cases: Vec<&TestCase> = match &args.filter {
-        Some(f) => all_cases.iter().filter(|tc| tc.name.contains(f.as_str())).collect(),
+        Some(f) => all_cases
+            .iter()
+            .filter(|tc| tc.name.contains(f.as_str()))
+            .collect(),
         None => all_cases.iter().collect(),
     };
     let total = cases.len();
 
     println!("Running {total} compatibility tests...\n");
-    println!("  PostgREST: {}\n  pg-rest:    {}\n", args.postgrest, args.ours);
+    println!(
+        "  PostgREST: {}\n  pg-rest:    {}\n",
+        args.postgrest, args.ours
+    );
 
     let mut results: Vec<TestResult> = Vec::new();
 
@@ -169,14 +178,20 @@ async fn run_test(
                 return TestResult {
                     name: tc.name,
                     passed: false,
-                    detail: format!("PostgREST returned invalid JSON: {e}\n    body: {}", truncate(&pg_body, 200)),
+                    detail: format!(
+                        "PostgREST returned invalid JSON: {e}\n    body: {}",
+                        truncate(&pg_body, 200)
+                    ),
                 }
             }
             (_, Err(e)) => {
                 return TestResult {
                     name: tc.name,
                     passed: false,
-                    detail: format!("pg-rest returned invalid JSON: {e}\n    body: {}", truncate(&our_body, 200)),
+                    detail: format!(
+                        "pg-rest returned invalid JSON: {e}\n    body: {}",
+                        truncate(&our_body, 200)
+                    ),
                 }
             }
         }

@@ -17,8 +17,7 @@ pub async fn start_schema_listener(
     tx: watch::Sender<Arc<SchemaCache>>,
     channel_name: &str,
 ) -> Result<(), SchemaCacheError> {
-    let (client, mut connection) =
-        tokio_postgres::connect(connection_string, NoTls).await?;
+    let (client, mut connection) = tokio_postgres::connect(connection_string, NoTls).await?;
 
     // Drive the connection manually so we can intercept notifications.
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -45,9 +44,7 @@ pub async fn start_schema_listener(
 
     // Identifier-quote the channel name to prevent injection.
     let quoted = format!("\"{}\"", channel_name.replace('"', "\"\""));
-    client
-        .execute(&format!("LISTEN {quoted}"), &[])
-        .await?;
+    client.execute(&format!("LISTEN {quoted}"), &[]).await?;
 
     tracing::info!("Schema listener started on channel '{channel_name}'");
 

@@ -66,13 +66,11 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
                 skip_status: false,
             }
         },
-
         // ==== CORS headers on regular requests ====
         // Verify both servers include Access-Control-Allow-Origin
         // (status-only since header values may differ)
         g_status_only("CORS on GET /authors", "/authors?order=id.asc", jwt),
         g_status_only("CORS on GET /books", "/books?order=id.asc", jwt),
-
         // ==== OPTIONS on more endpoints ====
         {
             TestCase {
@@ -194,7 +192,6 @@ pub fn cases(jwt: &str) -> Vec<TestCase> {
                 skip_status: false,
             }
         },
-
         // CORS on regular requests for more tables
         g_status_only("CORS on GET /items", "/items?order=id.asc", jwt),
         g_status_only("CORS on GET /orders", "/orders?order=id.asc", jwt),

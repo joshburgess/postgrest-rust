@@ -24,7 +24,10 @@ pub struct ReadRequest {
 pub enum SelectItem {
     Column(String),
     /// Column with an explicit type cast: `select=name::text`
-    Cast { column: String, pg_type: String },
+    Cast {
+        column: String,
+        pg_type: String,
+    },
     /// JSON path access: `select=data->key` or `select=data->>key`
     JsonAccess {
         column: String,
