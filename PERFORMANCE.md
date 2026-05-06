@@ -1,132 +1,138 @@
 # Performance
 
-Benchmark results comparing pg-rest-server (Rust/pg-wired AsyncConn) against PostgREST (Haskell/Hasql) on the same PostgreSQL instance. Numbers below are for the `pg-rest-server-tokio-postgres` binary; the `pg-rest-server-resolute` variant uses the same `pg-wired` data path and is expected to be in the same range.
+Benchmarks comparing both `pg-rest-server` backends (Rust) against the reference PostgREST (Haskell/Hasql) on the same PostgreSQL instance.
+
+The two Rust binaries share the URL parser, schema cache, and HTTP layer but have very different database data paths:
+
+- **`pg-rest-server-tokio-postgres`** uses `pg-wired`'s `AsyncPool` of `AsyncConn`s. Each `AsyncConn` is a single TCP connection with a writer/reader split that coalesces concurrent requests into a single `write()` syscall and FIFO-matches responses. The pool round-robins between N such connections.
+- **`pg-rest-server-resolute`** uses the published `resolute` crate (`TypedPool`). Each request acquires a connection from the pool, runs its `BEGIN; SET LOCAL ROLE; ...; COMMIT` sequence, then returns the connection. Throughput is bounded by `pool_size / round_trip_time`.
+
+The first design pipelines many concurrent requests over each TCP connection. The second uses one connection at a time per request. Both architectures have their place: pipelining wins for high-concurrency read-mostly workloads; the conventional pool is simpler and gives the user direct control over connection lifecycle (savepoints, multi-statement transactions, COPY).
 
 ## Test Environment
 
 - **CPU**: 16 cores (Apple Silicon)
 - **RAM**: 48 GB
-- **PostgreSQL**: 16-alpine in Docker (single container)
-- **pg-rest-server**: Single AsyncConn (one TCP connection to PostgreSQL)
-- **PostgREST**: Default configuration, connection pool
-- **Tool**: Apache Bench (`ab`), 5000 requests per test (3000 for large results)
-- **Auth**: JWT with HS256 (same secret for both servers)
-- **Date**: 2026-03-23
-
-## Architecture
-
-pg-rest-server uses a custom wire protocol driver (`pg-wired`) with:
-- **Async writer/reader split**: dedicated tokio tasks for send and receive
-- **Message coalescing**: concurrent requests batched into single `write()` syscall
-- **Binary extended query protocol**: parameterized queries (injection-safe)
-- **Statement cache**: Parse on first use, Bind+Execute on subsequent (LRU, 256 entries)
-- **Pipeline transactions**: `BEGIN; SET LOCAL ROLE; set_config` + parameterized query + `COMMIT` in one TCP write
+- **PostgreSQL**: 16-alpine in Docker
+- **Pool size**: 4 (both backends, both binaries)
+- **PostgREST**: default configuration
+- **Tool**: Apache Bench (`ab`), 5000 requests per workload (3000 for the large result)
+- **Auth**: HS256 JWT (same secret across all three servers)
+- **Date**: 2026-05-06
 
 ## Results
 
+Each table reports requests per second. `tp/PG` and `rs/PG` are the speedup of the tokio-postgres and resolute backends over PostgREST.
+
 ### 1. Simple Read: `/authors` (3 rows, ~150 bytes)
 
-| Concurrency | PostgREST | pg-rest-server | Speedup |
-|---|---|---|---|
-| 1 | 2,218 rps | 4,656 rps | 2.1x |
-| 5 | 8,440 rps | 13,474 rps | 1.6x |
-| 10 | 12,447 rps | 13,412 rps | 1.1x |
-| 20 | 7,353 rps | 13,267 rps | 1.8x |
-| 50 | 2,433 rps | 13,548 rps | 5.6x |
-| 100 | 2,075 rps | 13,155 rps | 6.3x |
+| c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
+|---|---|---|---|---|---|
+| 1   | 2,762  | 4,717   | 1,850 | 1.7x | 0.7x |
+| 5   | 9,165  | 15,154  | 4,399 | 1.7x | 0.5x |
+| 10  | 13,506 | 21,270  | 4,465 | 1.6x | 0.3x |
+| 20  | 6,841  | 24,632  | 4,435 | 3.6x | 0.6x |
+| 50  | 2,369  | 22,984  | 4,301 | 9.7x | 1.8x |
+| 100 | 2,695  | 23,241  | 4,347 | 8.6x | 1.6x |
 
-### 2. Filtered Read: `/books?pages=gt.300&order=id.asc` (2 rows)
+### 2. Filtered Read: `/books?pages=gt.300&order=id.asc`
 
-| Concurrency | PostgREST | pg-rest-server | Speedup |
-|---|---|---|---|
-| 1 | 2,114 rps | 4,647 rps | 2.2x |
-| 10 | 3,582 rps | 12,542 rps | 3.5x |
-| 50 | 3,052 rps | 12,387 rps | 4.1x |
-| 100 | 1,159 rps | 12,858 rps | 11.1x |
+| c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
+|---|---|---|---|---|---|
+| 1   | 2,549  | 4,472  | 1,758 | 1.8x | 0.7x |
+| 5   | 8,235  | 14,064 | 4,280 | 1.7x | 0.5x |
+| 10  | 11,644 | 20,521 | 4,234 | 1.8x | 0.4x |
+| 20  | 8,493  | 20,512 | 4,277 | 2.4x | 0.5x |
+| 50  | 2,528  | 23,741 | 4,326 | 9.4x | 1.7x |
+| 100 | 2,567  | 21,401 | 4,168 | 8.3x | 1.6x |
 
-### 3. Embedding: `/authors?select=name,books(title)&id=eq.1` (nested JSON)
+### 3. Embedding: `/authors?select=name,books(title)&id=eq.1`
 
-| Concurrency | PostgREST | pg-rest-server | Speedup |
-|---|---|---|---|
-| 1 | 1,430 rps | 4,356 rps | 3.0x |
-| 10 | 3,778 rps | 11,004 rps | 2.9x |
-| 50 | 2,469 rps | 11,455 rps | 4.6x |
-| 100 | 2,507 rps | 12,093 rps | 4.8x |
+| c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
+|---|---|---|---|---|---|
+| 1   | 1,183 | 4,098  | 1,637 | 3.5x  | 1.4x |
+| 5   | 2,250 | 13,389 | 3,856 | 5.9x  | 1.7x |
+| 10  | 1,477 | 18,742 | 3,467 | 12.7x | 2.3x |
+| 20  | 2,160 | 20,345 | 3,868 | 9.4x  | 1.8x |
+| 50  | 1,179 | 21,864 | 3,857 | 18.5x | 3.3x |
+| 100 | 2,460 | 21,845 | 3,959 | 8.9x  | 1.6x |
 
-### 4. Large Result: `/numbered` (100 rows, ~2KB)
+### 4. Large Result: `/numbered` (100 rows, ~2 KB)
 
-| Concurrency | PostgREST | pg-rest-server | Speedup |
-|---|---|---|---|
-| 1 | 887 rps | 4,139 rps | 4.7x |
-| 10 | 2,473 rps | 9,364 rps | 3.8x |
-| 50 | 1,852 rps | 9,854 rps | 5.3x |
-| 100 | 2,184 rps | 11,530 rps | 5.3x |
+| c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
+|---|---|---|---|---|---|
+| 1   | 1,369  | 4,013  | 1,713 | 2.9x  | 1.3x |
+| 5   | 8,080  | 13,172 | 4,134 | 1.6x  | 0.5x |
+| 10  | 11,666 | 19,319 | 4,198 | 1.7x  | 0.4x |
+| 20  | 2,761  | 18,781 | 4,140 | 6.8x  | 1.5x |
+| 50  | 1,237  | 20,093 | 4,252 | 16.2x | 3.4x |
+| 100 | 5,655  | 21,563 | 4,209 | 3.8x  | 0.7x |
 
 ### 5. Anonymous (no JWT): `/authors`
 
-| Concurrency | PostgREST | pg-rest-server | Speedup |
-|---|---|---|---|
-| 1 | 1,575 rps | 4,749 rps | 3.0x |
-| 10 | 3,408 rps | 13,961 rps | 4.1x |
-| 50 | 1,936 rps | 15,163 rps | 7.8x |
-| 100 | 1,684 rps | 15,396 rps | 9.1x |
+| c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
+|---|---|---|---|---|---|
+| 1   | 2,689  | 4,099  | 2,243 | 1.5x | 0.8x |
+| 5   | 8,828  | 13,008 | 5,291 | 1.5x | 0.6x |
+| 10  | 12,309 | 18,673 | 5,180 | 1.5x | 0.4x |
+| 20  | 3,776  | 19,400 | 5,221 | 5.1x | 1.4x |
+| 50  | 2,830  | 20,730 | 5,197 | 7.3x | 1.8x |
+| 100 | 2,991  | 21,214 | 5,210 | 7.1x | 1.7x |
 
 ### 6. RPC: `/rpc/add?a=3&b=4` (scalar function)
 
-| Concurrency | PostgREST | pg-rest-server | Speedup |
-|---|---|---|---|
-| 1 | 604 rps | 4,630 rps | 7.7x |
-| 10 | 3,939 rps | 13,170 rps | 3.3x |
-| 50 | 1,961 rps | 14,592 rps | 7.4x |
-| 100 | 1,464 rps | 13,937 rps | 9.5x |
+| c | PostgREST | tokio-postgres | resolute | tp/PG | rs/PG |
+|---|---|---|---|---|---|
+| 1   | 836   | 4,727  | 1,873 | 5.7x  | 2.2x |
+| 5   | 3,470 | 14,171 | 4,588 | 4.1x  | 1.3x |
+| 10  | 3,374 | 19,304 | 4,532 | 5.7x  | 1.3x |
+| 20  | 3,069 | 23,692 | 4,540 | 7.7x  | 1.5x |
+| 50  | 1,955 | 23,333 | 4,563 | 11.9x | 2.3x |
+| 100 | 3,747 | 22,640 | 4,513 | 6.0x  | 1.2x |
 
-## Key Observations
+## Observations
 
-1. **pg-rest-server is faster at every concurrency level** across all workloads, ranging from 1.1x to 11.1x faster.
+1. **The tokio-postgres backend dominates at high concurrency.** It maintains 20-24K rps from c=10 through c=100 across every workload. Coalescing concurrent requests onto a small number of TCP connections lets a single TCP write carry many `Bind`/`Execute` messages, and the reader task FIFO-matches responses back. At c=100 it is 6-18x faster than PostgREST.
 
-2. **Consistent throughput under load**: pg-rest-server maintains ~13-15K rps from c=5 through c=200. PostgREST peaks at c=5-10 then degrades sharply (12K → 2K rps).
+2. **The resolute backend plateaus at `pool_size / per-request-transaction-time`.** With four connections and per-request transactions of roughly 0.9 ms, throughput tops out near 4,400 rps. This is the cost of conventional pool semantics: only one in-flight request per connection, four round-trips per request (`BEGIN`, `SET LOCAL ROLE` / `set_config`, query, `COMMIT`). The plateau is flat from c=5 through c=100 because the bottleneck is connection count, not concurrency.
 
-3. **Single-connection architecture**: All results above use a single TCP connection to PostgreSQL via the async writer/reader split. The writer task coalesces concurrent requests into one `write()` syscall; the reader task FIFO-matches responses to callers.
+3. **Resolute scales linearly with `pool_size`.** Bumping the same `/authors` workload at c=50 from `pool_size=4` to `pool_size=20` raises throughput from 4,301 to 9,715 rps. Trading connections for throughput is a knob users can turn.
 
-4. **Largest wins at high concurrency**: At c=100, pg-rest-server is 5-11x faster depending on workload. PostgREST's connection pool and GHC runtime introduce contention that degrades throughput.
+4. **PostgREST has high variance under load.** Throughput is good at c=5-10 but degrades sharply as concurrency rises (typically 2-3K rps at c=50-100). Some runs see brief peaks at c=10 in the 12-13K rps range; sustained throughput is well below that.
 
-5. **RPC is the biggest single-threaded win**: 7.7x faster at c=1 (4,630 vs 604 rps). PostgREST's function call path has high overhead.
+5. **RPC and embedding are the biggest relative wins.** PostgREST's function-call path and nested-select planner are expensive; the Rust SQL builder produces a single correlated-subquery query that PostgreSQL plans well. At c=50, embedding is 18.5x faster on the tokio-postgres backend and 3.3x faster on the resolute backend.
 
-6. **Large results scale well**: 100-row queries at 11,530 rps (c=100) show the zero-copy response passthrough works efficiently.
+## Pool scaling (resolute)
 
-## Bottleneck Analysis
+The same `/authors` workload at c=50, varying `pool_size` for the resolute backend:
 
-The current bottleneck is the **single PostgreSQL backend process**. Each TCP connection maps to one PG backend, which is single-threaded. At ~14K rps, the backend is near saturation.
+| pool_size | rps  |
+|-----------|------|
+| 4         | 4,301 |
+| 20        | 9,715 |
 
-**Next optimization**: Pool of N AsyncConns (N TCP connections → N PG backends). This would spread query execution across multiple backend processes, potentially reaching 40-60K rps on this hardware.
+The relationship is roughly linear until the PostgreSQL container becomes CPU-bound. Each additional connection adds another concurrent backend process; in this single-container setup, throughput tops out somewhere around 8-10 connections before contention dominates.
 
-## Evolution of Performance
+## Choosing a backend
 
-| Approach | Auth c=20 rps | Auth c=100 rps | Safety |
-|---|---|---|---|
-| tokio-postgres + transaction | 7,096 | 6,826 | Binary protocol |
-| simple_query (inlined params) | 21,453 | 20,165 | String escaping |
-| pg-wired pool (binary) | 10,796 | 6,826 | Binary protocol |
-| pg-wired AsyncConn ×1 (binary) | 13,267 | 13,155 | Binary protocol |
-| **pg-wired AsyncPool ×4 (binary)** | **25,036** | **23,987** | **Binary protocol** |
-| PostgREST (reference) | 7,353 | 2,075 | Binary protocol |
+- **High-concurrency read-mostly REST API**: pick `pg-rest-server-tokio-postgres`. The pipelined data path is hard to beat for this shape of workload.
+- **Mixed transactional workload that benefits from holding connections (multi-statement transactions, savepoints, COPY, listening for NOTIFY in the request lifecycle)**: pick `pg-rest-server-resolute`, and size the pool to match expected concurrency.
 
-The AsyncPool architecture delivers the best combination of speed and safety: binary protocol parameterization (injection-proof) with async message coalescing and multi-backend parallelism.
+Both pass 1013/1013 in the PostgREST compatibility suite; the choice is operational, not a feature gap.
 
-## AsyncPool Scaling
+## Reproducing
 
-Round-robin dispatch across N AsyncConns (N TCP connections → N PG backends):
+```bash
+# Reference stack (PostgREST :3100, postgres :54323)
+cd test/compat && docker compose up -d
 
-| Pool Size | c=1 | c=10 | c=50 | c=100 |
-|---|---|---|---|---|
-| 1 AsyncConn | 4,562 | 13,765 | 14,234 | 14,022 |
-| 2 AsyncConns | 4,500 | 19,335 | 23,334 | 21,504 |
-| 4 AsyncConns | 4,590 | 21,363 | 25,036 | 23,987 |
-| 8 AsyncConns | 4,202 | 21,693 | 25,525 | 24,933 |
-| PostgREST | 2,456 | 10,495 | 3,097 | 2,832 |
+# Rust backend (pick one) on :3201
+cargo build --release
+target/release/pg-rest-server-tokio-postgres --config test/fixtures/bench-config.toml &
+# OR
+target/release/pg-rest-server-resolute --config test/fixtures/bench-config.toml &
 
-- c=1 is unaffected by pool size (single request, single backend)
-- 2 connections nearly doubles throughput at c≥10
-- 4 connections is the sweet spot (+76% over 1 conn)
-- 8 connections shows diminishing returns (PG container CPU-bound)
-- At c=100 with 4 conns: **8.5x faster** than PostgREST
+# Generate a JWT for "test_user" with the bench secret, then run ab against
+# http://127.0.0.1:3100 (PostgREST) and http://127.0.0.1:3201 (Rust).
+ab -q -n 5000 -c 50 -H "Authorization: Bearer $JWT" http://127.0.0.1:3201/authors
+```

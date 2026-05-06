@@ -1,0 +1,12 @@
+[database]
+uri = "postgres://authenticator:authenticator@localhost:54323/postgrest_test"
+schemas = ["api"]
+anon_role = "web_anon"
+pool_size = 4
+
+[server]
+host = "127.0.0.1"
+port = 3201
+
+[jwt]
+secret = "reallyreallyreallyreallyverysafe"

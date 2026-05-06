@@ -2,7 +2,8 @@
 //
 // Prerequisites:
 //   docker compose up -d
-//   cargo run -p pg-rest-server --release -- --config test/fixtures/test-config.toml
+//   cargo run -p pg-rest-server-tokio-postgres --release -- --config test/fixtures/test-config.toml
+//   # ...or pg-rest-server-resolute for the resolute backend
 //
 // Run:
 //   k6 run bench/k6.js
