@@ -1,6 +1,6 @@
 use crate::ast::*;
 use crate::error::ParseError;
-use pg_schema_cache::QualifiedName;
+use pg_schema_cache_tokio_postgres::QualifiedName;
 
 // ---------------------------------------------------------------------------
 // Select parser

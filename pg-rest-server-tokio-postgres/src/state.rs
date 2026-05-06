@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use crate::config::AppConfig;
-use pg_schema_cache::SchemaCache;
+use pg_schema_cache_tokio_postgres::SchemaCache;
 
 pub struct AppState {
     /// Connection pool for cold-path operations (EXPLAIN, health check).

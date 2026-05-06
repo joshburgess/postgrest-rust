@@ -193,11 +193,14 @@ pg-rest-server is designed as a drop-in replacement. To migrate:
 There are two interchangeable server implementations sharing the same query/schema layers:
 
 ```
-pg-rest-server-tokio-postgres (bin)   pg-rest-server-resolute (bin)
-    │   ↳ tokio-postgres + pg-wired       ↳ resolute (pure-Rust wire stack)
-    │
-    └── pg-query-engine (lib)             ← URL parser, SQL builder
-        └── pg-schema-cache (lib)         ← PostgreSQL catalog introspection
+pg-rest-server-tokio-postgres (bin)        pg-rest-server-resolute (bin)
+    │  ↳ tokio-postgres + pg-wired             ↳ resolute (pure-Rust wire stack)
+    │                                          │
+    ├── pg-schema-cache-tokio-postgres (lib)   ├── pg-schema-cache-resolute (lib)
+    │       ↳ tokio-postgres                   │       ↳ resolute
+    │                                          │
+    └── pg-query-engine (lib) ←────────────────┘
+            ↳ URL parser + SQL builder
 ```
 
 Both binaries pass the full PostgREST compatibility suite (1013/1013).

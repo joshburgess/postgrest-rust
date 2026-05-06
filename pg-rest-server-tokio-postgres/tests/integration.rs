@@ -46,7 +46,7 @@ async fn setup() -> axum::Router {
     tokio::spawn(async move {
         conn.await.ok();
     });
-    let cache = pg_schema_cache::build_schema_cache(&client, &config.database.schemas)
+    let cache = pg_schema_cache_tokio_postgres::build_schema_cache(&client, &config.database.schemas)
         .await
         .unwrap();
     drop(client);

@@ -4,7 +4,7 @@ RUN apk add --no-cache musl-dev
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
-COPY pg-schema-cache/ pg-schema-cache/
+COPY pg-schema-cache-tokio-postgres/ pg-schema-cache-tokio-postgres/
 COPY pg-query-engine/ pg-query-engine/
 COPY pg-rest-server-tokio-postgres/ pg-rest-server-tokio-postgres/
 

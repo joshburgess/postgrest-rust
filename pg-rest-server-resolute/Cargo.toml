@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # Internal crates — NO tokio-postgres
-pg-schema-cache-v2 = { path = "../pg-schema-cache-v2" }
+pg-schema-cache-resolute = { path = "../pg-schema-cache-resolute" }
 pg-query-engine = { path = "../pg-query-engine" }
 pg-wired = { workspace = true }
 resolute = { workspace = true }

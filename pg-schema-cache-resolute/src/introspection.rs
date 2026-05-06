@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use resolute::{Executor, FromRow};
 
 use crate::error::SchemaCacheError;
-use pg_schema_cache::*;
+use pg_schema_cache_tokio_postgres::*;
 
 // ---------------------------------------------------------------------------
 // SQL queries

@@ -1,4 +1,4 @@
-use pg_schema_cache::QualifiedName;
+use pg_schema_cache_tokio_postgres::QualifiedName;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {

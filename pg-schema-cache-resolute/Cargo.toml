@@ -1,10 +1,10 @@
 [package]
-name = "pg-schema-cache-v2"
+name = "pg-schema-cache-resolute"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pg-schema-cache = { path = "../pg-schema-cache" }
+pg-schema-cache-tokio-postgres = { path = "../pg-schema-cache-tokio-postgres" }
 resolute = { workspace = true }
 resolute-derive = { workspace = true }
 tokio = { version = "1", features = ["sync", "rt"] }

@@ -1,5 +1,5 @@
 [package]
-name = "pg-schema-cache"
+name = "pg-schema-cache-tokio-postgres"
 version = "0.1.0"
 edition = "2021"
 
