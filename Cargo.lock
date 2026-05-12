@@ -1441,9 +1441,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pg-pool"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb35335a2fc361332ea86a6d9386fc750d66283ef99d9c21d7d637e1bec008c7"
+checksum = "efccb2d035cb0879fa3e88f494756bd6a8433e0914218931e42509eaeb0c22f0"
 dependencies = [
  "bytes",
  "pg-wired",
@@ -1566,9 +1566,9 @@ version = "0.1.0"
 
 [[package]]
 name = "pg-wired"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9696beacf0a5e70f340c22707b55341fbb15abd2d42d61e4067008cd5f5fb803"
+checksum = "43f27c26917ab7e91c9ff58496cf84560b69f83eed546daa4ad3d79124381c55"
 dependencies = [
  "base64",
  "bytes",
@@ -1875,9 +1875,9 @@ dependencies = [
 
 [[package]]
 name = "resolute"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b4bbda6cf22f8e8cb82743eff26a7a6ee5317c4e42ed4eae3701ced0ee1dd1e"
+checksum = "4ebc829b947a2d446cfcada11201a5efa2a3ab741f7ebfaa2fabc5ee2f9076d6"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -1908,9 +1908,9 @@ dependencies = [
 
 [[package]]
 name = "resolute-macros"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32c0d43316a290f03a41f6782753be086fbbb67d7ee0e7a3d8a44d62ad7dc73c"
+checksum = "889a8cbf9c56cb837a7437e1e4a80015606b368e28a6728cfd3aa2145bbf9f05"
 dependencies = [
  "bytes",
  "pg-wired",

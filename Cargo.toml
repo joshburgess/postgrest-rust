@@ -12,9 +12,9 @@ authors = ["Josh Burgess"]
 rust-version = "1.75"
 
 [workspace.dependencies]
-pg-wired = "0.3"
-pg-pool = "0.3"
-resolute = "0.4"
+pg-wired = "0.4"
+pg-pool = "0.4"
+resolute = "0.5"
 resolute-derive = "0.1"
-resolute-macros = "0.2"
-resolute-cli = "0.2"
+resolute-macros = "0.3"
+resolute-cli = "0.3"
