@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "pg-query-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pg-schema-cache-types",
  "proptest",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "pg-rest-server-resolute"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "pg-rest-server-tokio-postgres-deadpool"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
@@ -1512,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "pg-rest-server-tokio-postgres-pg-wired"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "pg-schema-cache-resolute"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pg-schema-cache-types",
  "resolute",
@@ -1551,7 +1551,7 @@ dependencies = [
 
 [[package]]
 name = "pg-schema-cache-tokio-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pg-schema-cache-types",
  "thiserror 2.0.18",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "pg-schema-cache-types"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "pg-wired"

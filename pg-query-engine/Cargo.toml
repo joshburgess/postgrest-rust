@@ -12,7 +12,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-pg-schema-cache-types = { path = "../pg-schema-cache-types", version = "0.1.0" }
+pg-schema-cache-types = { path = "../pg-schema-cache-types", version = "0.2.0" }
 serde_json = "1"
 thiserror = "2"
 
